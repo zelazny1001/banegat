@@ -1,0 +1,25 @@
+//=====================================================================
+
+public static byte[] zeroPad(byte[] inputData, int paddingSize) {
+        byte zero = (byte) 0xFF;
+        int originalLength = (inputData != null ? inputData.length : 0);
+        byte[] padded = new byte[originalLength + 2 * paddingSize];
+
+        // front padding
+        for (int i = 0; i < paddingSize; i++) {
+            padded[i] = zero;
+        }
+        // copy original
+        if (inputData != null) {
+            System.arraycopy(inputData, 0, padded, paddingSize, originalLength);
+        }
+        // back padding
+        int startOfEndPad = paddingSize + originalLength;
+        for (int i = startOfEndPad; i < padded.length; i++) {
+            padded[i] = zero;
+        }
+
+        return padded;
+    }
+    
+//=====================================================================
