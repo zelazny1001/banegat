@@ -1,25 +1,130 @@
 //=====================================================================
 
-public static byte[] zeroPad(byte[] inputData, int paddingSize) {
-        byte zero = (byte) 0xFF;
-        int originalLength = (inputData != null ? inputData.length : 0);
-        byte[] padded = new byte[originalLength + 2 * paddingSize];
-
-        // front padding
-        for (int i = 0; i < paddingSize; i++) {
-            padded[i] = zero;
-        }
-        // copy original
-        if (inputData != null) {
-            System.arraycopy(inputData, 0, padded, paddingSize, originalLength);
-        }
-        // back padding
-        int startOfEndPad = paddingSize + originalLength;
-        for (int i = startOfEndPad; i < padded.length; i++) {
-            padded[i] = zero;
-        }
-
-        return padded;
+public static byte[] zeroPad(byte[] inputData, int paddingSize, boolean padLeft, boolean padRight) {
+    byte zeroLevel = (byte) 0xFF;
+    int originalLength = (inputData != null ? inputData.length : 0);
+    int leftCount  = padLeft  ? paddingSize : 0;
+    int rightCount = padRight ? paddingSize : 0;
+    byte[] padded = new byte[leftCount + originalLength + rightCount];
+    
+    int destPos = 0;
+    // left padding
+    for (int i = 0; i < leftCount; i++) {
+        padded[destPos++] = zeroLevel;
+    }
+    // copy original data
+    if (inputData != null) {
+        System.arraycopy(inputData, 0, padded, destPos, originalLength);
+        destPos += originalLength;
+    }
+    // right padding
+    for (int i = 0; i < rightCount; i++) {
+        padded[destPos++] = zeroLevel;
     }
     
+    return padded;
+}
+
 //=====================================================================
+
+package analyzer;
+
+public class SpikeInfo {
+    private final int startIndex;
+    private final int length;
+    private final byte backgroundValue;
+
+    public SpikeInfo(int startIndex, int length, byte backgroundValue) {
+        this.startIndex = startIndex;
+        this.length = length;
+        this.backgroundValue = backgroundValue;
+    }
+
+    public int getStartIndex() {
+        return startIndex;
+    }
+
+    public int getLength() {
+        return length;
+    }
+
+    public byte getBackgroundValue() {
+        return backgroundValue;
+    }
+}
+
+//=======================================================================
+
+package analyzer;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class SpikeDetector {
+    // background is: mu-law zero-level codes
+    private static final byte BACKGROUND_LEVEL_LOW = (byte) 0xFF;   // -1
+    private static final byte BACKGROUND_LEVEL_HIGH = (byte) 0x7F;  // 127
+
+    public static boolean isBackground(byte value) {
+        return value == BACKGROUND_LEVEL_LOW || value == BACKGROUND_LEVEL_HIGH;
+    }
+
+    public static List<SpikeInfo> detectSpikes(
+            byte[] data,
+            int maxSpikeWidth,
+            int backgroundDuration
+    ) {
+        List<SpikeInfo> spikes = new ArrayList<>();
+        int length = data.length;
+        if (length < backgroundDuration * 2 + 1) {
+            return spikes;
+        }
+        int index = backgroundDuration;
+        while (index < length - backgroundDuration) {
+            if (!isBackground(data[index])) {
+                int end = index + 1;
+                while (end < length - backgroundDuration
+                        && end < index + maxSpikeWidth
+                        && !isBackground(data[end])) {
+                    end++;
+                }
+                int spikeLength = end - index;
+                if (spikeLength <= maxSpikeWidth) {
+                    boolean beforeOk = true;
+                    for (int i = index - backgroundDuration; i < index; i++) {
+                        if (!isBackground(data[i])) {
+                            beforeOk = false;
+                            break;
+                        }
+                    }
+                    boolean afterOk = true;
+                    for (int i = end; i < end + backgroundDuration; i++) {
+                        if (!isBackground(data[i])) {
+                            afterOk = false;
+                            break;
+                        }
+                    }
+                    if (beforeOk && afterOk) {
+                        byte bgValue = data[index - 1];
+                        spikes.add(new SpikeInfo(index, spikeLength, bgValue));
+                        index = end;
+                        continue;
+                    }
+                }
+            }
+            index++;
+        }
+        return spikes;
+    }
+
+    public static void removeSpikes(byte[] data, List<SpikeInfo> spikes) {
+        for (SpikeInfo spike : spikes) {
+            int start = spike.getStartIndex();
+            int end = start + spike.getLength();
+            byte backgroundBeforeSpike = spike.getBackgroundValue();
+            for (int i = start; i < end; i++) {
+                data[i] = backgroundBeforeSpike;
+            }
+        }
+    }
+}
