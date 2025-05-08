@@ -128,3 +128,92 @@ public class SpikeDetector {
         }
     }
 }
+
+//============================================================================
+
+package analyzer;
+
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+import java.util.List;
+import java.util.Arrays;
+
+public class SpikeDetectorTest {
+    private static final int MAX_SPIKE_WIDTH = 3;
+    private static final int BACKGROUND_DURATION = 2;
+    private static final byte LOW = (byte)0xFF;
+    private static final byte HIGH = (byte)0x7F;
+
+    @Test
+    public void testNoSpikes_dataUnchanged() {
+        byte[] data = new byte[] {LOW, LOW, HIGH, HIGH, LOW, HIGH, LOW};
+        byte[] original = data.clone();
+        List<SpikeInfo> spikes = SpikeDetector.detectSpikes(data, MAX_SPIKE_WIDTH, BACKGROUND_DURATION);
+        assertTrue(spikes.isEmpty());
+        SpikeDetector.removeSpikes(data, spikes);
+        assertArrayEquals(original, data);
+    }
+
+    @Test
+    public void testSingleSpike_detectPosition() {
+        byte[] data = new byte[] {LOW, LOW, LOW, 10, LOW, LOW, LOW};
+        List<SpikeInfo> spikes = SpikeDetector.detectSpikes(data, MAX_SPIKE_WIDTH, BACKGROUND_DURATION);
+        assertEquals(1, spikes.size());
+        SpikeInfo spike = spikes.get(0);
+        assertEquals(3, spike.getStartIndex());
+        assertEquals(1, spike.getLength());
+        assertEquals(LOW, spike.getBackgroundValue());
+    }
+
+    @Test
+    public void testSingleSpike_removed() {
+        byte[] data = new byte[] {LOW, LOW, LOW, 10, LOW, LOW, LOW};
+        List<SpikeInfo> spikes = SpikeDetector.detectSpikes(data, MAX_SPIKE_WIDTH, BACKGROUND_DURATION);
+        SpikeDetector.removeSpikes(data, spikes);
+        assertEquals(LOW, data[3]);
+        List<SpikeInfo> after = SpikeDetector.detectSpikes(data, MAX_SPIKE_WIDTH, BACKGROUND_DURATION);
+        assertTrue(after.isEmpty());
+    }
+
+    @Test
+    public void testMultipleSpikes_variousCounts() {
+        byte[] data0 = new byte[] {LOW, LOW, HIGH, HIGH, LOW};
+        assertTrue(SpikeDetector.detectSpikes(data0, MAX_SPIKE_WIDTH, BACKGROUND_DURATION).isEmpty());
+
+        byte[] data1 = new byte[] {LOW, LOW, 5, LOW, LOW};
+        assertEquals(1, SpikeDetector.detectSpikes(data1, MAX_SPIKE_WIDTH, BACKGROUND_DURATION).size());
+
+        byte[] data2 = new byte[] {LOW, LOW, 5, LOW, LOW, 6, LOW, LOW};
+        assertEquals(2, SpikeDetector.detectSpikes(data2, MAX_SPIKE_WIDTH, BACKGROUND_DURATION).size());
+
+        byte[] data3 = new byte[] {LOW, LOW, 5, 6, 7, LOW, LOW};
+        assertEquals(1, SpikeDetector.detectSpikes(data3, MAX_SPIKE_WIDTH, BACKGROUND_DURATION).size());
+    }
+
+    @Test
+    public void testBackgroundDuration15_noSpikes() {
+        int duration = 15;
+        byte[] data = new byte[duration * 2 + 1];
+        Arrays.fill(data, LOW);
+        List<SpikeInfo> spikes = SpikeDetector.detectSpikes(data, MAX_SPIKE_WIDTH, duration);
+        assertTrue(spikes.isEmpty());
+    }
+
+    @Test
+    public void testBackgroundDuration15_oneSpike() {
+        int duration = 15;
+        byte[] data = new byte[duration * 2 + 1];
+        Arrays.fill(data, LOW);
+        int spikePos = duration;
+        data[spikePos] = 42; // spike
+        List<SpikeInfo> spikes = SpikeDetector.detectSpikes(data, MAX_SPIKE_WIDTH, duration);
+        assertEquals(1, spikes.size());
+        SpikeInfo spike = spikes.get(0);
+        assertEquals(spikePos, spike.getStartIndex());
+        // removal
+        SpikeDetector.removeSpikes(data, spikes);
+        assertEquals(LOW, data[spikePos]);
+        List<SpikeInfo> after = SpikeDetector.detectSpikes(data, MAX_SPIKE_WIDTH, duration);
+        assertTrue(after.isEmpty());
+    }
+}
