@@ -1,3 +1,252 @@
+# asr_metrics_calc.py
+# ingest data from INPUT_SPREADSHEET and write to new filename INPUT_SPREADSHEET_metrics.xlsx
+
+from __future__ import annotations
+import os
+import re
+import requests
+import random
+from typing import Optional
+
+from openpyxl import load_workbook, Workbook
+from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.text import RichText
+from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterProperties, Font as DrawFont
+
+CODE_IS_BEING_TESTED: bool = True
+
+# monthly consolidation
+DO_MONTHLY_CONSOLIDATION = False # if True, then only monthly consolidation will be run
+SPREADSHEET_PREFIX: str = "ASR"
+WEEKLY_SPREADSHEETS: list[str] = [
+    "ASR_0401thru0405_2025_metrics.xlsx",
+    "ASR_0406thru0410_2025_metrics.xlsx",
+    "ASR_0411thru0417_2025_metrics.xlsx"
+]
+
+# weekly spreadsheet
+ROOT_DIR: str = "j:/projects/sheet-logic/"
+INPUT_SPREADSHEET: str = ROOT_DIR + "ASR_0411thru0417_2025.xlsx"
+TARGET_WORKSHEET: str = "input_worksheet"
+
+# input worksheet columns
+SESSION_ID_COL_NAME: str         = "session_id"
+RAW_TRANSCRIPT_COL_NAME: str     = "raw_transcript"
+GROUND_TRUTH_COL_NAME: str       = "Ground Truth Transcript"
+HALLUCINATION_COL_NAME: str      = "Hallucination"
+
+# metrics worksheet
+METRICS_WORKSHEET_NAME: str      = "metrics"
+METADATA_COL_NAME: str           = "metadata"
+ENTIRE_COL_NAME: str             = "entire"
+GT_SECTION_TEXT_COL_NAME: str    = "gt section"
+MODEL_SECTION_TEXT_COL_NAME: str = "model text"
+UNDECIPHERABLES_COL_NAME: str    = "undecipherables"
+
+# metrics computation
+NUMBER_OF_SECTIONS: int          = 5
+WER_POST_ENDPOINT: str           = "https://wer_host:3281/word_error_rate"
+
+# visualization worksheet
+VISUALIZATION_WORKSHEET_NAME: str = "visualization"
+BIN_WIDTH: int                    = 4
+MAX_PERCENT: int                  = 100
+
+# summary worksheet
+SUMMARY_WORKSHEET_NAME: str               = "summary"
+AVERAGE_WER_COL_NAME: str                 = "AVG_WER"
+SESSION_COUNT_COL_NAME: str               = "num sessions"
+UNDECIPHERABLES_TOTAL_COUNT_COL_NAME: str = "undecipherable_count"
+UNDECIPHERABLES_AVG_PER_SESSION_COL_NAME: str = "undecipherable_avg"
+HALLUCINATION_COUNT_COL_NAME: str = "Hallucination Count"
+HALLUCINATION_AVG_COL_NAME:   str = "Hallucination Avg"
+
+
+def get_name_of_results_spreadsheet(input_spreadsheet_name: str) -> str:
+    dir_name = os.path.dirname(input_spreadsheet_name)
+    base = os.path.basename(input_spreadsheet_name).rsplit(".", 1)[0]
+    return os.path.join(dir_name, f"{base}_metrics.xlsx")
+
+def preprocess(text: str) -> str:
+    if not text:
+        return ""
+    text = str(text)
+    s = text.lower()
+    s = re.sub(r"[.,\-?…]", " ", s)
+    s = re.sub(r"\{[^}]*\}", "", s)
+    s = re.sub(r"[\[\]]", "", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+def get_wer_from_api(endpoint: str, ground_truth: str, transcript: str) -> float:
+    if CODE_IS_BEING_TESTED:
+        return random.random() * 50
+    try:
+        resp = requests.post(
+            endpoint,
+            json={"groundTruth": ground_truth, "transcript": transcript},
+            verify=False,
+            timeout=5
+        )
+        return float(resp.text.strip())
+    except Exception:
+        return float('nan')
+
+
+def count_gt_entire_undecipherables(input_ws: Worksheet, session_id: str) -> int:
+    texts = []
+    for row in input_ws.iter_rows(min_row=2, values_only=True):
+        sid = row[0]
+        gt  = row[2]
+        if sid == session_id and gt:
+            texts.append(str(gt))
+    agg = " ".join(texts)
+    return agg.count("{UNDECIPHERABLE}")
+
+
+def count_gt_section_undecipherables(section_text: str) -> int:
+    if not section_text:
+        return 0
+    return section_text.count("{UNDECIPHERABLE}")
+
+
+def add_metrics_sheet(wb: Workbook) -> Worksheet:
+    if METRICS_WORKSHEET_NAME in wb.sheetnames:
+        del wb[METRICS_WORKSHEET_NAME]
+    return wb.create_sheet(METRICS_WORKSHEET_NAME)
+
+
+def write_header(ws: Worksheet) -> None:
+    headers = [
+        METADATA_COL_NAME,
+        SESSION_ID_COL_NAME,
+        "section",
+        GT_SECTION_TEXT_COL_NAME,
+        MODEL_SECTION_TEXT_COL_NAME,
+        "WER",
+        UNDECIPHERABLES_COL_NAME
+    ]
+    for idx, title in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=idx, value=title)
+        cell.font = Font(name="Aptos Narrow", size=9, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.freeze_panes = "A2"
+
+
+def write_metrics_row(
+    ws: Worksheet,
+    metadata: str,
+    session_id: str,
+    section,
+    gt_text: str,
+    model_text: str,
+    wer: float,
+    undecipherables: Optional[int],
+    is_entire: bool = False
+) -> None:
+    row = ws.max_row + 1
+    body_font  = Font(name="Aptos Narrow", size=9)
+    body_align = Alignment(horizontal="left", vertical="center")
+    fill = PatternFill(
+        start_color="00FFFF", end_color="00FFFF", fill_type="solid"
+    ) if is_entire else None
+
+    values = (
+        metadata,
+        session_id,
+        section,
+        gt_text,
+        model_text,
+        wer,
+        undecipherables
+    )
+    for col_idx, val in enumerate(values, start=1):
+        cell = ws.cell(row=row, column=col_idx, value=val)
+        cell.font      = body_font
+        cell.alignment = body_align
+        if fill:
+            cell.fill = fill
+        if col_idx == 6:  # WER column
+            cell.number_format = "0.000"
+
+
+def process_sessions(input_ws: Worksheet, metrics_ws: Worksheet, metadata: str) -> None:
+    data = list(input_ws.iter_rows(min_row=2, values_only=True))
+    sessions = {}
+    for row in data:
+        sid = row[0]
+        raw = row[1]
+        gt  = row[2]
+        sessions.setdefault(sid, []).append((raw, gt))
+
+    total_sessions = len(sessions)
+    for idx, (sid, entries) in enumerate(sessions.items(), start=1):
+        print(f"processing session {idx} of {total_sessions} (session_id: {sid}) ... THIS_IS_A_TEST_RUN: {CODE_IS_BEING_TESTED}")
+
+        undecipherable_entire = count_gt_entire_undecipherables(input_ws, sid)
+
+        # entire session
+        gt_concat  = " ".join(preprocess(gt) for _, gt in entries)
+        raw_concat = " ".join(preprocess(raw) for raw, _ in entries)
+        wer_entire = get_wer_from_api(WER_POST_ENDPOINT, gt_concat, raw_concat)
+        write_metrics_row(
+            ws             = metrics_ws,
+            metadata       = metadata,
+            session_id     = sid,
+            section        = ENTIRE_COL_NAME,
+            gt_text        = gt_concat,
+            model_text     = raw_concat,
+            wer            = wer_entire,
+            undecipherables= undecipherable_entire,
+            is_entire      = True
+        )
+
+        # split into fixed NUMBER_OF_SECTIONS
+        total = len(entries)
+        base  = total // NUMBER_OF_SECTIONS
+        rem   = total % NUMBER_OF_SECTIONS
+        start = 0
+
+        for section in range(1, NUMBER_OF_SECTIONS + 1):
+            num_rows = base + (1 if section <= rem else 0)
+            if num_rows == 0:
+                break
+            block = entries[start : start + num_rows]
+            start += num_rows
+
+            gt_block  = " ".join(gt for _, gt in block)
+            raw_block = " ".join(raw for raw, _ in block)
+            wer_sec   = get_wer_from_api(WER_POST_ENDPOINT, preprocess(gt_block), preprocess(raw_block))
+            undecipherable_for_section = count_gt_section_undecipherables(gt_block)
+
+            write_metrics_row(
+                ws             = metrics_ws,
+                metadata       = metadata,
+                session_id     = sid,
+                section        = section,
+                gt_text        = gt_block,
+                model_text     = raw_block,
+                wer            = wer_sec,
+                undecipherables= undecipherable_for_section
+            )
+
+def style_columns(ws: Worksheet) -> None:
+    widths = {
+        1: 12,  # metadata
+        2: 65,  # session_id
+        3:  9,  # section
+        4: 64,  # gt section
+        5: 64,  # model text
+        6:  9,  # WER
+        7:  12  # undecipherables
+    }
+    for col, w in widths.items():
+        ws.column_dimensions[get_column_letter(col)].width = w
+    ws.auto_filter.ref = f"A1:G{ws.max_row}"
+
 def count_hallucinations(input_ws: Worksheet, session_id: str) -> int:
     hdr = [c.value for c in input_ws[1]]
     try:
@@ -29,3 +278,409 @@ def add_hallucination_column(metrics_ws: Worksheet, input_ws: Worksheet) -> None
 
     metrics_ws.column_dimensions[get_column_letter(col)].width = 12
     metrics_ws.auto_filter.ref = f"A1:{get_column_letter(col)}{metrics_ws.max_row}"
+
+def calculate_hallucination_stats(metrics_ws: Worksheet) -> tuple[int, float]:
+    headers = [c.value for c in metrics_ws[1]]
+    hall_idx = headers.index(HALLUCINATION_COL_NAME)
+    total = sessions = 0
+    for row in metrics_ws.iter_rows(min_row=2, values_only=True):
+        if row[2] == ENTIRE_COL_NAME and isinstance(row[hall_idx], (int, float)):
+            total   += int(row[hall_idx])
+            sessions += 1
+    avg = total / sessions if sessions else 0.0
+    return total, avg
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Visualization pipeline
+# ────────────────────────────────────────────────────────────────────────────────
+
+def add_visualization_sheet(wb: Workbook) -> Worksheet:
+    if VISUALIZATION_WORKSHEET_NAME in wb.sheetnames:
+        del wb[VISUALIZATION_WORKSHEET_NAME]
+    return wb.create_sheet(VISUALIZATION_WORKSHEET_NAME)
+
+
+def extract_entire_session_wers(metrics_ws: Worksheet) -> list[float]:
+    vals = []
+    for row in metrics_ws.iter_rows(min_row=2, values_only=True):
+        section = row[2]
+        wer     = row[5]
+        if section == ENTIRE_COL_NAME and isinstance(wer, (int, float)):
+            vals.append(wer)
+    return vals
+
+def calculate_mean_wer(metrics_ws: Worksheet) -> float:
+    wers = [
+        row[5]
+        for row in metrics_ws.iter_rows(min_row=2, values_only=True)
+        if row[2] == ENTIRE_COL_NAME and isinstance(row[5], (int, float))
+    ]
+    return sum(wers) / len(wers) if wers else 0.0
+
+def calculate_undecipherable_stats(metrics_ws: Worksheet) -> tuple[int, int, float]:
+    total_undec = 0
+    session_count = 0
+
+    for row in metrics_ws.iter_rows(min_row=2, values_only=True):
+        section = row[2]            # 'section' column
+        undec   = row[6]            # 'undecipherables' column
+        if section == ENTIRE_COL_NAME and isinstance(undec, (int, float)):
+            total_undec   += int(undec)
+            session_count += 1
+
+    avg_undec = total_undec / session_count if session_count else 0.0
+    return total_undec, session_count, avg_undec
+
+def compute_bins_and_counts(
+    values: list[float],
+    bin_width: int = BIN_WIDTH,
+    max_percent: int = MAX_PERCENT
+) -> tuple[list[str], list[int]]:
+    edges = list(range(0, max_percent + bin_width, bin_width))
+    labels = [f"{edges[i]}–{edges[i+1]}%" for i in range(len(edges)-1)]
+    counts = [0] * len(labels)
+    for v in values:
+        for i in range(len(labels)):
+            if edges[i] <= v < edges[i+1] or (i == len(labels)-1 and v == edges[-1]):
+                counts[i] += 1
+                break
+    return labels, counts
+
+
+def write_histogram_table(
+    wb: Workbook,
+    labels: list[str],
+    counts: list[int]
+) -> Worksheet:
+    ws = add_visualization_sheet(wb)
+
+    # grab metadata (same for every row)
+    metrics_ws     = wb[METRICS_WORKSHEET_NAME]
+    metadata_value = metrics_ws.cell(row=2, column=1).value
+
+    # header now includes metadata
+    ws.append([METADATA_COL_NAME, "WER", "count"])
+    # data rows — prepend metadata to each
+    for lbl, cnt in zip(labels, counts):
+        ws.append([metadata_value, lbl, cnt])
+
+    # set column widths (metadata=12, WER=8, count=8)
+    widths = {1: 12, 2: 8, 3: 8}
+    for col, w in widths.items():
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+    return ws
+
+def insert_clustered_column_chart(
+    hist_ws: Worksheet,
+    chart_cell: str = "D2"
+) -> None:
+    wb = hist_ws.parent
+    metrics_ws = wb[METRICS_WORKSHEET_NAME]
+
+    # 1) compute stats
+    mean_wer                    = calculate_mean_wer(metrics_ws)
+    undecipherables_total, \
+    undecipherables_count, \
+    undecipherable_avg          = calculate_undecipherable_stats(metrics_ws)
+
+    print(f"undecipherables_total: {undecipherables_total}, "
+          f"undecipherables_count: {undecipherables_count}, "
+          f"undecipherable_avg: {undecipherable_avg}")
+
+    # 2) build the chart
+    chart = BarChart()
+    chart.title = (
+        f"Session WER vs Session Count\n"
+        f"Average WER: {mean_wer:.2f}%\n"
+        f"Undecipherable total: {undecipherables_total}, "
+        f"average per session: {undecipherable_avg:.2f}"
+    )
+
+    # enforce Aptos on title
+    rt = chart.title.tx.rich
+    para = rt.paragraphs[0]
+    para.pPr = ParagraphProperties(
+        defRPr=CharacterProperties(latin=DrawFont(typeface="Aptos"))
+    )
+    chart.title.tx.rich = rt
+
+    # data in col 3 (headers in row 1)
+    data = Reference(hist_ws, min_col=3, min_row=1, max_row=hist_ws.max_row)
+    # categories in col 2 (rows 2…N)
+    cats = Reference(hist_ws, min_col=2, min_row=2, max_row=hist_ws.max_row)
+
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(cats)
+
+    # light gray bars
+    ser = chart.series[0]
+    ser.graphicalProperties.solidFill = "D3D3D3"
+
+    # integer Y-axis
+    chart.y_axis.majorUnit = 1
+    chart.y_axis.numFmt    = '0'
+
+    # ensure tick labels are visible
+    chart.x_axis.delete        = False
+    chart.y_axis.delete        = False
+    chart.x_axis.visible       = True
+    chart.y_axis.visible       = True
+    chart.x_axis.tickLblPos    = "nextTo"
+    chart.y_axis.tickLblPos    = "nextTo"
+    chart.x_axis.majorTickMark = "out"
+    chart.y_axis.majorTickMark = "out"
+
+    # minimal clutter
+    chart.x_axis.title = None
+    chart.y_axis.title = None
+    chart.legend      = None
+    chart.y_axis.majorGridlines = None
+
+    # size and add
+    chart.width  = 20
+    chart.height = 9
+    hist_ws.add_chart(chart, chart_cell)
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Summary worksheet
+# ────────────────────────────────────────────────────────────────────────────────
+
+def add_summary_sheet(wb: Workbook) -> Worksheet:
+    if SUMMARY_WORKSHEET_NAME in wb.sheetnames:
+        del wb[SUMMARY_WORKSHEET_NAME]
+    return wb.create_sheet(SUMMARY_WORKSHEET_NAME)
+
+
+def write_summary(metrics_ws: Worksheet, summary_ws: Worksheet) -> None:
+    headers = [
+        METADATA_COL_NAME,
+        AVERAGE_WER_COL_NAME,
+        SESSION_COUNT_COL_NAME,
+        UNDECIPHERABLES_TOTAL_COUNT_COL_NAME,
+        UNDECIPHERABLES_AVG_PER_SESSION_COL_NAME,
+        HALLUCINATION_COUNT_COL_NAME,
+        HALLUCINATION_AVG_COL_NAME
+    ]
+    for idx, title in enumerate(headers, start=1):
+        cell = summary_ws.cell(row=1, column=idx, value=title)
+        cell.font = Font(name="Aptos Narrow", size=9, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    metadata = metrics_ws.cell(row=2, column=1).value
+    mean_wer = calculate_mean_wer(metrics_ws)
+    total_undec, session_count, avg_undec = calculate_undecipherable_stats(metrics_ws)
+    total_hall, avg_hall = calculate_hallucination_stats(metrics_ws)
+    avg_hall = round(avg_hall, 2)
+
+    summary_ws.append([
+        metadata,
+        mean_wer,
+        session_count,
+        total_undec,
+        avg_undec,
+        total_hall,
+        avg_hall
+    ])
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Monthly consolidation
+# ────────────────────────────────────────────────────────────────────────────────
+
+def get_monthly_filepath(
+    root_dir: str,
+    weekly_files: list[str],
+    spreadsheet_prefix: str
+) -> str:
+    dates = []
+    for fname in weekly_files:
+        base = os.path.basename(fname).rsplit(".", 1)[0]
+        parts = base.split("_")
+        # parts = ["ASR","0401thru0405","2025","metrics"]
+        start, end = parts[1].split("thru")
+        year = parts[2]
+        dates.append((start, end, year))
+    starts = [d[0] for d in dates]
+    ends   = [d[1] for d in dates]
+    year   = dates[0][2]
+    earliest = min(starts)
+    latest   = max(ends)
+    filename = f"{spreadsheet_prefix}_{earliest}thru{latest}_{year}_metrics.xlsx"
+    return os.path.join(root_dir, filename)
+
+def create_monthly_worksheet(
+    root_dir: str,
+    weekly_files: list[str],
+    spreadsheet_prefix: str
+) -> str:
+    monthly_path = get_monthly_filepath(root_dir, weekly_files, spreadsheet_prefix)
+    if os.path.exists(monthly_path):
+        os.remove(monthly_path)
+    monthly_wb = Workbook()
+    del monthly_wb[monthly_wb.sheetnames[0]]
+
+    # 1) aggregate "metrics" sheets
+    mon_metrics = monthly_wb.create_sheet(METRICS_WORKSHEET_NAME)
+    first = True
+    for wf in weekly_files:
+        wb_w = load_workbook(os.path.join(root_dir, wf))
+        ws_w = wb_w[METRICS_WORKSHEET_NAME]
+        for i, row in enumerate(ws_w.iter_rows(values_only=True), start=1):
+            if i == 1 and not first:
+                continue
+            mon_metrics.append(row)
+        first = False
+    # style "metrics"
+    for cell in mon_metrics[1]:
+        cell.font = Font(name="Aptos", size=9, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    mon_metrics.freeze_panes = "A2"
+    mon_metrics.auto_filter.ref = f"A1:{get_column_letter(mon_metrics.max_column)}{mon_metrics.max_row}"
+    for col, w in {"A":15,"B":52,"C":7,"D":63,"E":63,"F":8,"G":12}.items():
+        mon_metrics.column_dimensions[col].width = w
+    for row in mon_metrics.iter_rows(min_row=2):
+        if row[2].value == ENTIRE_COL_NAME:
+            fill = PatternFill(start_color="00FFFF", end_color="00FFFF", fill_type="solid")
+            for c in row:
+                c.fill = fill
+
+    # 2) build "visualization" by aggregating all weeks into single bin set
+    all_wers: list[float] = []
+    for wf in weekly_files:
+        wb_w = load_workbook(os.path.join(root_dir, wf))
+        m_ws = wb_w[METRICS_WORKSHEET_NAME]
+        all_wers.extend(extract_entire_session_wers(m_ws))
+    labels, counts = compute_bins_and_counts(all_wers)
+
+    hist_ws = monthly_wb.create_sheet(VISUALIZATION_WORKSHEET_NAME)
+    hist_ws.append([METADATA_COL_NAME, "WER", "count"])
+    monthly_meta = os.path.basename(
+        get_monthly_filepath(root_dir, weekly_files, spreadsheet_prefix)
+    ).rsplit(".", 1)[0].split("_", 1)[1].replace("_metrics", "")
+    for lbl, cnt in zip(labels, counts):
+        hist_ws.append([monthly_meta, lbl, cnt])
+    # style "visualization"
+    for cell in hist_ws[1]:
+        cell.font = Font(name="Aptos", size=9, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    hist_ws.freeze_panes = "A2"
+    hist_ws.auto_filter.ref = f"A1:{get_column_letter(hist_ws.max_column)}{hist_ws.max_row}"
+    hist_ws.column_dimensions['A'].width = 15
+    insert_clustered_column_chart(hist_ws, chart_cell="D2")
+
+    # 3) aggregate "summary" sheets
+    mon_summary = monthly_wb.create_sheet(SUMMARY_WORKSHEET_NAME)
+    first = True
+    for wf in weekly_files:
+        wb_w = load_workbook(os.path.join(root_dir, wf))
+        ws_w = wb_w[SUMMARY_WORKSHEET_NAME]
+        for i, row in enumerate(ws_w.iter_rows(values_only=True), start=1):
+            if i == 1 and not first:
+                continue
+            mon_summary.append(row)
+        first = False
+    # style header of "summary"
+    for cell in mon_summary[1]:
+        cell.font = Font(name="Aptos", size=9, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    mon_summary.freeze_panes = "A2"
+    mon_summary.auto_filter.ref = f"A1:{get_column_letter(mon_summary.max_column)}{mon_summary.max_row}"
+    for col, w in {"A":15,"B":7,"C":9,"D":10,"E":9}.items():
+        mon_summary.column_dimensions[col].width = w
+
+    # 4) inject blank row + consolidated summary into "summary"
+    mon_summary.append([None] * 5)
+
+    entries = list(
+        mon_summary.iter_rows(
+            min_row=2,
+            max_row=1 + len(weekly_files),
+            values_only=True
+        )
+    )
+    avg_wers   = [r[1] for r in entries]
+    num_sess   = sum(int(r[2]) for r in entries)
+    und_counts = sum(int(r[3]) for r in entries)
+    avg_wer = round(sum(avg_wers) / len(avg_wers), 2) if avg_wers else 0.0
+    und_avg = round(und_counts / num_sess,       2) if num_sess else 0.0
+
+    # prefix monthly meta with "ASR_"
+    meta_label = f"{SPREADSHEET_PREFIX}_{monthly_meta}"
+    mon_summary.append([meta_label, avg_wer, num_sess, und_counts, und_avg])
+
+    # highlight consolidated row and ensure Aptos font for all summary cells
+    last_row = mon_summary.max_row
+    fill = PatternFill(start_color="00FFFF", end_color="00FFFF", fill_type="solid")
+    for r in mon_summary.iter_rows(min_row=1, max_row=last_row):
+        for c in r:
+            # set font
+            bold = (c.row == 1)
+            c.font = Font(name="Aptos", size=9, bold=bold)
+            # apply fill only to final row
+            if c.row == last_row:
+                c.fill = fill
+
+    monthly_wb.save(monthly_path)
+    return monthly_path
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Main program
+# ────────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    if DO_MONTHLY_CONSOLIDATION:
+        monthly_path = create_monthly_worksheet(ROOT_DIR, WEEKLY_SPREADSHEETS, SPREADSHEET_PREFIX)
+        print(f"Saved monthly consolidated metrics to {monthly_path}")
+        return
+
+    # load input
+    input_wb = load_workbook(INPUT_SPREADSHEET)
+    in_ws     = input_wb[TARGET_WORKSHEET]
+
+    # prepare results workbook
+    results_path = get_name_of_results_spreadsheet(INPUT_SPREADSHEET)
+    if os.path.exists(results_path):
+        os.remove(results_path)
+
+    # 0) replicate the business inputs to the first worksheet in metrics spreadsheet
+    results_wb = Workbook()
+    input_copy_ws = results_wb.active
+    input_copy_ws.title = TARGET_WORKSHEET
+    for row in in_ws.iter_rows(values_only=True):
+        input_copy_ws.append(row)
+
+    # 1) metrics sheet
+    metrics_ws = add_metrics_sheet(results_wb)
+    write_header(metrics_ws)
+    metadata_value = os.path.basename(INPUT_SPREADSHEET).rsplit(".", 1)[0]
+    process_sessions(in_ws, metrics_ws, metadata_value)
+    style_columns(metrics_ws)
+
+    # update for hallucinations
+    add_hallucination_column(metrics_ws, in_ws)
+
+    # 2) visualization sheet — **use** results_wb here!
+    wers   = extract_entire_session_wers(metrics_ws)
+    labels, counts = compute_bins_and_counts(wers)
+    hist_ws = write_histogram_table(results_wb, labels, counts)
+    insert_clustered_column_chart(hist_ws, chart_cell="D2")
+
+    # style the visualization sheet (header bold, freeze & filter, metadata col width=15)  ← NEW
+    # header font
+    for cell in hist_ws[1]:
+        cell.font = Font(name="Aptos Narrow", size=9, bold=True)
+    hist_ws.freeze_panes = "A2"
+    hist_ws.auto_filter.ref = f"A1:{get_column_letter(hist_ws.max_column)}{hist_ws.max_row}"
+    hist_ws.column_dimensions['A'].width = 15
+
+    # 3) summary
+    summary_ws = add_summary_sheet(results_wb)
+    write_summary(metrics_ws, summary_ws)
+
+    # save all
+    results_wb.save(results_path)
+    print(f"Saved metrics, visualization & summary to {results_path}")
+
+if __name__ == "__main__":
+    main()
