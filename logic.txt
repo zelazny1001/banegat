@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import os
+import re
 import httpx
 from typing import List, Dict
 from openpyxl import Workbook
@@ -50,6 +51,17 @@ def get_suffix_from_filename(file_path: str, input_filename_prefix: str) -> str:
         return stem[len(input_filename_prefix) + 1 :]
     return stem
 
+def preprocess(text):
+    if not text:
+        return ""
+    text = str(text)
+    text = text.lower()
+    text = re.sub(r"[.,\-?…]", " ", text)
+    text = re.sub(r"\{[^}]*\}", "", text)
+    text = re.sub(r"[\[\]]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
 def parse_analysis_file(file_path: str) -> List[Dict[str, str]]:
     records: List[Dict[str, str]] = []
     with open(file_path, encoding="utf-8") as f:
@@ -77,12 +89,18 @@ def find_ground_truth(filename: str, gt_root_dir: str) -> str:
             prefix = fn[: -len("_ground_truth.txt")]
             if prefix in filename:
                 with open(os.path.join(gt_root_dir, fn), encoding="utf-8") as gf:
-                    return gf.read().strip()
-    return ""
+                    text = preprocess(gf.read())
+                    return text
+    return "no ground truth available"
 
 def calculate_wer(ground_truth: str, transcript: str, wer_endpoint: str) -> str:
     resp = httpx.post(wer_endpoint, json={"groundTruth": ground_truth, "transcript": transcript})
-    return resp.text.strip()
+    text = resp.text.strip()
+    try:
+        value = float(text)
+        return f"{value:.2f}"
+    except ValueError:
+        return text
 
 def write_first_sheet(wb: Workbook, records: List[Dict[str, str]]) -> None:
     ws = wb.active
