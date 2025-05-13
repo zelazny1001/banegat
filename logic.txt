@@ -1,73 +1,61 @@
-def create_consolidated_spreadsheet(
-    output_root_dir: str,
-    analysis_worksheet: str,
-    first_sheet_headers: List[str],
-    wer_worksheet: str,
-    wer_sheet_headers: List[str],
+def create_wer_comparison(
+    wb: Workbook,
+    wer_sheet_name: str,
+    compare_sheet_name: str,
 ) -> None:
-    from openpyxl import Workbook, load_workbook
     from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter
 
-    consolidated_path = os.path.join(output_root_dir, "consolidated_analysis.xlsx")
-    wb_out = Workbook()
-    ws_a = wb_out.active
-    ws_a.title = analysis_worksheet
-    ws_a.append(first_sheet_headers)
-    ws_w = wb_out.create_sheet(wer_worksheet)
-    ws_w.append(wer_sheet_headers)
+    # build filename → {condition: wer, …}
+    ws_w = wb[wer_sheet_name]
+    mapping: Dict[str, Dict[str, str]] = {}
+    conditions: List[str] = []
+    for fn, cond, *_, wer in ws_w.iter_rows(min_row=2, values_only=True):
+        mapping.setdefault(fn, {})[cond] = wer
+        if cond not in conditions:
+            conditions.append(cond)
 
-    for fname in os.listdir(output_root_dir):
-        if not fname.endswith(".xlsx") or fname == "consolidated_analysis.xlsx":
-            continue
-        path = os.path.join(output_root_dir, fname)
-        wb_in = load_workbook(path, data_only=True)
-        if analysis_worksheet in wb_in.sheetnames:
-            for row in wb_in[analysis_worksheet].iter_rows(min_row=2, values_only=True):
-                ws_a.append(row)
-        if wer_worksheet in wb_in.sheetnames:
-            for row in wb_in[wer_worksheet].iter_rows(min_row=2, values_only=True):
-                ws_w.append(row)
+    # create the compare sheet
+    ws_c = wb.create_sheet(compare_sheet_name)
+    # header: filename, (conditions, WER) × N
+    header = ["filename"] + sum((["conditions", "WER"] for _ in conditions), [])
+    ws_c.append(header)
 
+    # data rows
+    for fn, cm in mapping.items():
+        row = [fn]
+        for cond in conditions:
+            row += [cond, cm.get(cond, "")]
+        ws_c.append(row)
+
+    # styling
     hf = Font(name="Aptos", size=9, bold=True)
     df = Font(name="Aptos", size=9)
-
-    # style analysis sheet
-    for cell in ws_a[1]:
+    ncols = 1 + 2 * len(conditions)
+    for cell in ws_c[1]:
         cell.font = hf
-    for row in ws_a.iter_rows(min_row=2, max_col=len(first_sheet_headers)):
-        for cell in row:
+    for r in ws_c.iter_rows(min_row=2, max_col=ncols):
+        for cell in r:
             cell.font = df
-    ws_a.freeze_panes = "A2"
-    ws_a.auto_filter.ref = f"A1:{get_column_letter(len(first_sheet_headers))}{ws_a.max_row}"
-    for idx, w in enumerate(
-        [FILENAME_WIDTH, CONDITIONS_WIDTH, SEQNUM_WIDTH, LOC_WIDTH, DUR_WIDTH, TRANSCRIPT_WIDTH],
-        start=1
-    ):
-        ws_a.column_dimensions[get_column_letter(idx)].width = w
+    ws_c.freeze_panes = "A2"
+    ws_c.auto_filter.ref = f"A1:{get_column_letter(ncols)}{ws_c.max_row}"
 
-    # style WER sheet
-    for cell in ws_w[1]:
-        cell.font = hf
-    for row in ws_w.iter_rows(min_row=2, max_col=len(wer_sheet_headers)):
-        for cell in row:
-            cell.font = df
-    ws_w.freeze_panes = "A2"
-    ws_w.auto_filter.ref = f"A1:{get_column_letter(len(wer_sheet_headers))}{ws_w.max_row}"
-    for idx, w in enumerate(
-        [FILENAME_WIDTH, CONDITIONS_WIDTH, FULL_TRANSCRIPT_WIDTH, GT_WIDTH, WER_WIDTH],
-        start=1
-    ):
-        ws_w.column_dimensions[get_column_letter(idx)].width = w
+    # widths: first col + repeated CONDITIONS_WIDTH, WER_WIDTH
+    from __main__ import FILENAME_WIDTH, CONDITIONS_WIDTH, WER_WIDTH
+    ws_c.column_dimensions[get_column_letter(1)].width = FILENAME_WIDTH
+    for i in range(len(conditions)):
+        ws_c.column_dimensions[get_column_letter(2 + 2*i)].width = CONDITIONS_WIDTH
+        ws_c.column_dimensions[get_column_letter(3 + 2*i)].width = WER_WIDTH
 
-    wb_out.save(consolidated_path)
+# ==================
 
+# in main(), after consolidating and loading the workbook:
+from openpyxl import load_workbook
 
-# in main(), after processing all files:
-    create_consolidated_spreadsheet(
-        output_root_dir,
-        ANALYSIS_WORKSHEET,
-        FIRST_SHEET_HEADERS,
-        WER_WORKSHEET,
-        WER_SHEET_HEADERS,
-    )
+wb = load_workbook(CONSOLIDATED_OUTPUT_SPREADSHEET)
+create_wer_comparison(
+    wb,
+    WER_WORKSHEET,
+    WER_COMPARISON,
+)
+wb.save(CONSOLIDATED_OUTPUT_SPREADSHEET)
