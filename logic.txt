@@ -1,0 +1,44 @@
+def highlight_lowest_wer(
+    consolidated_path: str,
+    comparison_sheet_name: str,
+) -> None:
+    from openpyxl import load_workbook
+    from openpyxl.styles import PatternFill
+
+    wb = load_workbook(consolidated_path)
+    ws = wb[comparison_sheet_name]
+
+    # cyan fill
+    fill = PatternFill(start_color="00FFFF", end_color="00FFFF", fill_type="solid")
+
+    for row in ws.iter_rows(min_row=2, values_only=False):
+        # collect (wer_value, cond_cell, wer_cell)
+        candidates = []
+        # columns: row[0]=filename, then pairs (cond, wer)
+        for j in range(1, len(row), 2):
+            cond_cell = row[j]
+            wer_cell  = row[j+1] if j+1 < len(row) else None
+            if wer_cell is None:
+                continue
+            try:
+                val = float(wer_cell.value)
+            except (TypeError, ValueError):
+                continue
+            candidates.append((val, cond_cell, wer_cell))
+
+        if not candidates:
+            continue
+
+        # find the lowest WER
+        min_val, min_cond_cell, min_wer_cell = min(candidates, key=lambda x: x[0])
+        min_cond_cell.fill = fill
+        min_wer_cell.fill  = fill
+
+    wb.save(consolidated_path)
+    
+# ============
+
+highlight_lowest_wer(
+    CONSOLIDATED_OUTPUT_SPREADSHEET,
+    WER_COMPARISON,
+)
