@@ -19,7 +19,7 @@ from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterPrope
 CODE_IS_BEING_TESTED: bool = True
 
 # monthly consolidation
-DO_MONTHLY_CONSOLIDATION = False # if True, then only monthly consolidation will be run
+DO_MONTHLY_CONSOLIDATION = True # if True, then only monthly consolidation will be run
 SPREADSHEET_PREFIX: str = "ASR"
 WEEKLY_SPREADSHEETS: list[str] = [
     "ASR_0401thru0405_2025_metrics.xlsx",
@@ -29,7 +29,7 @@ WEEKLY_SPREADSHEETS: list[str] = [
 
 # weekly spreadsheet
 ROOT_DIR: str = "j:/projects/sheet-logic/"
-INPUT_SPREADSHEET: str = ROOT_DIR + "ASR_0411thru0417_2025.xlsx"
+INPUT_SPREADSHEET: str = ROOT_DIR + "ASR_0406thru0410_2025.xlsx"
 TARGET_WORKSHEET: str = "input_worksheet"
 
 # input worksheet columns
@@ -126,8 +126,7 @@ def write_header(ws: Worksheet) -> None:
         "section",
         GT_SECTION_TEXT_COL_NAME,
         MODEL_SECTION_TEXT_COL_NAME,
-        "WER",
-        UNDECIPHERABLES_COL_NAME
+        "WER"
     ]
     for idx, title in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=idx, value=title)
@@ -144,15 +143,13 @@ def write_metrics_row(
     gt_text: str,
     model_text: str,
     wer: float,
-    undecipherables: Optional[int],
+    undecipherables: Optional[int],  # still accepted but no longer written
     is_entire: bool = False
 ) -> None:
     row = ws.max_row + 1
     body_font  = Font(name="Aptos Narrow", size=9)
     body_align = Alignment(horizontal="left", vertical="center")
-    fill = PatternFill(
-        start_color="00FFFF", end_color="00FFFF", fill_type="solid"
-    ) if is_entire else None
+    fill = PatternFill(start_color="00FFFF", end_color="00FFFF", fill_type="solid") if is_entire else None
 
     values = (
         metadata,
@@ -160,8 +157,7 @@ def write_metrics_row(
         section,
         gt_text,
         model_text,
-        wer,
-        undecipherables
+        wer
     )
     for col_idx, val in enumerate(values, start=1):
         cell = ws.cell(row=row, column=col_idx, value=val)
@@ -240,12 +236,11 @@ def style_columns(ws: Worksheet) -> None:
         3:  9,  # section
         4: 64,  # gt section
         5: 64,  # model text
-        6:  9,  # WER
-        7:  12  # undecipherables
+        6:  9   # WER
     }
     for col, w in widths.items():
         ws.column_dimensions[get_column_letter(col)].width = w
-    ws.auto_filter.ref = f"A1:G{ws.max_row}"
+    ws.auto_filter.ref = f"A1:F{ws.max_row}"
 
 def count_hallucinations(input_ws: Worksheet, session_id: str) -> int:
     hdr = [c.value for c in input_ws[1]]
@@ -458,8 +453,6 @@ def write_summary(metrics_ws: Worksheet, summary_ws: Worksheet) -> None:
         METADATA_COL_NAME,
         AVERAGE_WER_COL_NAME,
         SESSION_COUNT_COL_NAME,
-        UNDECIPHERABLES_TOTAL_COUNT_COL_NAME,
-        UNDECIPHERABLES_AVG_PER_SESSION_COL_NAME,
         HALLUCINATION_COUNT_COL_NAME,
         HALLUCINATION_AVG_COL_NAME
     ]
@@ -470,7 +463,7 @@ def write_summary(metrics_ws: Worksheet, summary_ws: Worksheet) -> None:
 
     metadata = metrics_ws.cell(row=2, column=1).value
     mean_wer = calculate_mean_wer(metrics_ws)
-    total_undec, session_count, avg_undec = calculate_undecipherable_stats(metrics_ws)
+    _, session_count, _ = calculate_undecipherable_stats(metrics_ws)
     total_hall, avg_hall = calculate_hallucination_stats(metrics_ws)
     avg_hall = round(avg_hall, 2)
 
@@ -478,8 +471,6 @@ def write_summary(metrics_ws: Worksheet, summary_ws: Worksheet) -> None:
         metadata,
         mean_wer,
         session_count,
-        total_undec,
-        avg_undec,
         total_hall,
         avg_hall
     ])
@@ -506,7 +497,7 @@ def get_monthly_filepath(
     year   = dates[0][2]
     earliest = min(starts)
     latest   = max(ends)
-    filename = f"{spreadsheet_prefix}_{earliest}thru{latest}_{year}_metrics.xlsx"
+    filename = f"{spreadsheet_prefix}_{earliest}thru{latest}_{year}_monthly_metrics.xlsx"
     return os.path.join(root_dir, filename)
 
 def create_monthly_worksheet(
