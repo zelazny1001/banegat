@@ -1,0 +1,486 @@
+# wer_from_vad_analysis.py
+# convert java generated analysis files into insightful spreadsheets
+
+from __future__ import annotations
+import os
+import re
+import httpx
+from typing import List, Dict
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
+
+# file locations & endpoints
+CONSOLIDATED_SPREADSHEET_NAME = "consolidated_analysis.xlsx"
+INPUT_ANALYSIS_ROOT_DIR: str = "j:/projects/sheet-logic/"
+ANALYSIS_FILE_EXTENSION: str = ".txt"
+INPUT_GT_ROOT_DIR: str = "j:/tmp/vad/ground_truth/"
+INPUT_FILENAME_PREFIX: str = "customer-side-analysis"
+OUTPUT_SPREADSHEET_ROOT_DIR: str = "j:/projects/sheet-logic/analysis-spreadsheets/"
+WER_ENDPOINT: str = "http://api_for_wer:2517/wer"
+
+# sheet names
+ANALYSIS_WORKSHEET: str = "analysis"
+WER_WORKSHEET:    str = "WER"
+WER_COMPARISON:   str = "WER_compare"
+
+# column name globals
+FIRST_SHEET_HEADERS: List[str] = ["filename", "conditions", "seqNum", "loc", "dur", "transcript"]
+WER_SHEET_HEADERS: List[str] = ["filename", "conditions", "full_transcript", "GT", "WER"]
+
+# worksheet 1 (analysis)
+FILENAME_WIDTH: int = 35
+SEQNUM_WIDTH: int = 7
+LOC_WIDTH: int = 7
+DUR_WIDTH: int = 6
+TRANSCRIPT_WIDTH: int = 60
+
+# worksheet 2 (wer)
+CONDITIONS_WIDTH: int = 16
+FULL_TRANSCRIPT_WIDTH: int = 30
+GT_WIDTH: int = 30
+WER_WIDTH: int = 8
+
+
+def convert_and_format_column(
+    ws: Worksheet,
+    col_idx: int,
+    start_row: int = 2,
+    fmt: str = "0.00"
+) -> None:
+    """
+    Convert any string values in ws[col_idx] rows [start_row..end] to floats (when possible)
+    and apply the given number format to all numeric cells.
+    """
+    for r in range(start_row, ws.max_row + 1):
+        cell = ws.cell(row=r, column=col_idx)
+        v = cell.value
+        if isinstance(v, str):
+            try:
+                cell.value = float(v)
+            except ValueError:
+                continue
+        if isinstance(cell.value, (int, float)):
+            cell.number_format = fmt
+
+
+def convert_and_format_column_by_header(
+    ws: Worksheet,
+    header: str,
+    start_row: int = 2,
+    fmt: str = "0.00"
+) -> None:
+    """
+    Find the column whose heading in row 1 equals `header`, then
+    convert & format that column.
+    """
+    for idx, cell in enumerate(ws[1], start=1):
+        if cell.value == header:
+            convert_and_format_column(ws, idx, start_row, fmt)
+            return
+    raise ValueError(f"Header {header!r} not found in sheet {ws.title}")
+
+
+def get_analysis_files(root_dir: str, extension: str) -> List[str]:
+    return [
+        os.path.join(root_dir, f)
+        for f in os.listdir(root_dir)
+        if f.endswith(extension)
+    ]
+
+def get_suffix_from_filename(file_path: str, input_filename_prefix: str) -> str:
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    if stem.startswith(input_filename_prefix + "-"):
+        return stem[len(input_filename_prefix) + 1 :]
+    return stem
+
+def preprocess(text):
+    if not text:
+        return ""
+    text = str(text)
+    text = text.lower()
+    text = re.sub(r"[.,\-?…]", " ", text)
+    text = re.sub(r"\{[^}]*\}", "", text)
+    text = re.sub(r"[\[\]]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+def get_column_indices(header_cols: List[str], *names: str) -> Dict[str, int]:
+    indices: Dict[str, int] = {}
+    for name in names:
+        if name not in header_cols:
+            raise ValueError(f"Column {name!r} not found in header row")
+        indices[name] = header_cols.index(name)
+    return indices
+
+def parse_analysis_file(file_path: str) -> List[Dict[str, str]]:
+    records: List[Dict[str, str]] = []
+    with open(file_path, encoding="utf-8") as f:
+        # read header and build name→index map
+        header_line = next(f)
+        headers = [c.strip() for c in header_line.rstrip("\n").split("|")]
+        idx = get_column_indices(
+            headers,
+            "filename",
+            "seqNum",
+            "loc",
+            "dur",
+            "transcript"
+        )
+
+        for line in f:
+            cols = [c.strip() for c in line.rstrip("\n").split("|")]
+            records.append({
+                "filename":   cols[idx["filename"]],
+                "seqNum":     cols[idx["seqNum"]],
+                "loc":        cols[idx["loc"]],
+                "dur":        cols[idx["dur"]],
+                "transcript": cols[idx["transcript"]],
+            })
+    return records
+
+def group_transcripts_by_filename(records: List[Dict[str, str]]) -> Dict[str, List[str]]:
+    groups: Dict[str, List[str]] = {}
+    for r in records:
+        groups.setdefault(r["filename"], []).append(r["transcript"])
+    return groups
+
+def find_ground_truth(filename: str, gt_root_dir: str) -> str:
+    for fn in os.listdir(gt_root_dir):
+        if fn.startswith("ground_truth_"):
+            suffix = fn[len("ground_truth_"): -len(".txt")]
+            if suffix in filename:
+                with open(os.path.join(gt_root_dir, fn), encoding="utf-8") as gf:
+                    text = preprocess(gf.read())
+                    return text
+    print("no ground truth available")
+    return "no ground truth available"
+
+def calculate_wer(ground_truth: str, transcript: str, wer_endpoint: str) -> str:
+    resp = httpx.post(wer_endpoint,
+                      json={"groundTruth": ground_truth, "transcript": transcript},
+                      timeout=5.0)
+    text = resp.text.strip()
+    try:
+        value = float(text)
+        return f"{value:.2f}"
+    except ValueError:
+        return "WER API Error"
+
+def write_analysis_sheet(wb: Workbook, conditions: str, records: List[Dict[str, str]]) -> None:
+    ws = wb.active
+    ws.title = ANALYSIS_WORKSHEET
+    ws.append(FIRST_SHEET_HEADERS)
+    for r in records:
+        ws.append([
+            r["filename"],
+            conditions,
+            r["seqNum"],
+            r["loc"],
+            r["dur"],
+            r["transcript"]
+        ])
+    header_font = Font(name="Aptos", size=9, bold=True)
+    data_font = Font(name="Aptos", size=9)
+    for cell in ws[1]:
+        cell.font = header_font
+    for row in ws.iter_rows(min_row=2, max_col=len(FIRST_SHEET_HEADERS)):
+        for cell in row:
+            cell.font = data_font
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(FIRST_SHEET_HEADERS))}{len(records) + 1}"
+    for idx, w in enumerate([FILENAME_WIDTH, CONDITIONS_WIDTH, SEQNUM_WIDTH, LOC_WIDTH, DUR_WIDTH, TRANSCRIPT_WIDTH], start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = w
+
+def write_wer_sheet(
+    wb: Workbook,
+    conditions: str,
+    records: List[Dict[str, str]],
+    gt_root_dir: str,
+    wer_endpoint: str,
+) -> None:
+    ws = wb.create_sheet(WER_WORKSHEET)
+    ws.append(WER_SHEET_HEADERS)
+    groups = group_transcripts_by_filename(records)
+    header_font = Font(name="Aptos", size=9, bold=True)
+    data_font   = Font(name="Aptos", size=9)
+
+    for fn, transcripts in groups.items():
+        full    = " ".join(transcripts)
+        gt      = find_ground_truth(fn, gt_root_dir)
+        wer_str = calculate_wer(gt, full, wer_endpoint)
+        # store as float when possible
+        try:
+            wer_val = float(wer_str)
+        except ValueError:
+            wer_val = wer_str
+        ws.append([fn, conditions, full, gt, wer_val])
+
+    # style header and data
+    for cell in ws[1]:
+        cell.font = header_font
+    for row in ws.iter_rows(min_row=2, max_col=len(WER_SHEET_HEADERS)):
+        for cell in row:
+            cell.font = data_font
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(WER_SHEET_HEADERS))}{ws.max_row}"
+
+    # set column widths
+    for idx, width in enumerate(
+        [FILENAME_WIDTH, CONDITIONS_WIDTH, FULL_TRANSCRIPT_WIDTH, GT_WIDTH, WER_WIDTH],
+        start=1
+    ):
+        ws.column_dimensions[get_column_letter(idx)].width = width
+
+    # convert & format the WER column by header
+    convert_and_format_column_by_header(ws, "WER")
+
+
+def process_file(file_path: str,
+                 input_filename_prefix: str,
+                 gt_root_dir: str,
+                 wer_endpoint: str,
+                 output_root_dir: str) -> None:
+    records = parse_analysis_file(file_path)
+    suffix = get_suffix_from_filename(file_path, input_filename_prefix)
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    output_path = os.path.join(output_root_dir, f"{stem}.xlsx")
+    wb = Workbook()
+    write_analysis_sheet(wb, suffix, records)
+    write_wer_sheet(wb, suffix, records, gt_root_dir, wer_endpoint)
+    wb.save(output_path)
+
+def create_consolidated_spreadsheet(
+    output_root_dir: str,
+    analysis_worksheet: str,
+    first_sheet_headers: List[str],
+    wer_worksheet: str,
+    wer_sheet_headers: List[str],
+) -> None:
+
+    consolidated_path = os.path.join(output_root_dir, CONSOLIDATED_SPREADSHEET_NAME)
+    wb_out = Workbook()
+    ws_a = wb_out.active
+    ws_a.title = analysis_worksheet
+    ws_a.append(first_sheet_headers)
+    ws_w = wb_out.create_sheet(wer_worksheet)
+    ws_w.append(wer_sheet_headers)
+
+    for fname in os.listdir(output_root_dir):
+        if not fname.endswith(".xlsx") or fname == os.path.basename(CONSOLIDATED_SPREADSHEET_NAME):
+            continue
+        path = os.path.join(output_root_dir, fname)
+        wb_in = load_workbook(path, data_only=True)
+        if analysis_worksheet in wb_in.sheetnames:
+            for row in wb_in[analysis_worksheet].iter_rows(min_row=2, values_only=True):
+                ws_a.append(row)
+        if wer_worksheet in wb_in.sheetnames:
+            for row in wb_in[wer_worksheet].iter_rows(min_row=2, values_only=True):
+                ws_w.append(row)
+
+    hf = Font(name="Aptos", size=9, bold=True)
+    df = Font(name="Aptos", size=9)
+
+    # style analysis sheet
+    for cell in ws_a[1]:
+        cell.font = hf
+    for row in ws_a.iter_rows(min_row=2, max_col=len(first_sheet_headers)):
+        for cell in row:
+            cell.font = df
+    ws_a.freeze_panes = "A2"
+    ws_a.auto_filter.ref = f"A1:{get_column_letter(len(first_sheet_headers))}{ws_a.max_row}"
+    for idx, w in enumerate(
+        [FILENAME_WIDTH, CONDITIONS_WIDTH, SEQNUM_WIDTH, LOC_WIDTH, DUR_WIDTH, TRANSCRIPT_WIDTH],
+        start=1
+    ):
+        ws_a.column_dimensions[get_column_letter(idx)].width = w
+
+    # style WER sheet
+    for cell in ws_w[1]:
+        cell.font = hf
+    for row in ws_w.iter_rows(min_row=2, max_col=len(wer_sheet_headers)):
+        for cell in row:
+            cell.font = df
+    ws_w.freeze_panes = "A2"
+    ws_w.auto_filter.ref = f"A1:{get_column_letter(len(wer_sheet_headers))}{ws_w.max_row}"
+    for idx, w in enumerate(
+        [FILENAME_WIDTH, CONDITIONS_WIDTH, FULL_TRANSCRIPT_WIDTH, GT_WIDTH, WER_WIDTH],
+        start=1
+    ):
+        ws_w.column_dimensions[get_column_letter(idx)].width = w
+
+    wb_out.save(consolidated_path)
+
+def create_wer_comparison(
+    wb: Workbook,
+    wer_sheet_name: str,
+    comparison_sheet_name: str,
+) -> None:
+    ws_w = wb[wer_sheet_name]
+    mapping: Dict[str, Dict[str, str]] = {}
+    conditions: List[str] = []
+
+    # build mapping filename → {condition: wer}
+    for fn, cond, *_, wer in ws_w.iter_rows(min_row=2, values_only=True):
+        mapping.setdefault(fn, {})[cond] = wer
+        if cond not in conditions:
+            conditions.append(cond)
+
+    # new sheet with one column per condition
+    ws_c = wb.create_sheet(comparison_sheet_name)
+    header = ["filename"] + conditions
+    ws_c.append(header)
+
+    # populate rows
+    for fn, cm in mapping.items():
+        row = [fn] + [cm.get(cond, "") for cond in conditions]
+        ws_c.append(row)
+
+    # styling
+    hf = Font(name="Aptos", size=9, bold=True)
+    df = Font(name="Aptos", size=9)
+    ncols = 1 + len(conditions)
+
+    for cell in ws_c[1]:
+        cell.font = hf
+    for r in ws_c.iter_rows(min_row=2, max_col=ncols):
+        for cell in r:
+            cell.font = df
+
+    ws_c.freeze_panes = "A2"
+    ws_c.auto_filter.ref = f"A1:{get_column_letter(ncols)}{ws_c.max_row}"
+
+    # set widths
+    ws_c.column_dimensions[get_column_letter(1)].width = FILENAME_WIDTH
+    for i in range(len(conditions)):
+        ws_c.column_dimensions[get_column_letter(2 + i)].width = CONDITIONS_WIDTH
+
+    # convert & format each condition column by header
+    for cond in conditions:
+        convert_and_format_column_by_header(ws_c, cond)
+
+def highlight_lowest_wer(
+    consolidated_path: str,
+    comparison_sheet_name: str,
+) -> None:
+
+    wb = load_workbook(consolidated_path)
+    ws = wb[comparison_sheet_name]
+    cyan_fill = PatternFill(fill_type="solid", fgColor="FF00FFFF")
+
+    for row in ws.iter_rows(min_row=2):
+        best_cell = None
+        best_val = None
+        # examine columns 2…end
+        for cell in row[1:]:
+            v = cell.value
+            if v is None:
+                continue
+            try:
+                f = float(v)
+            except (ValueError, TypeError):
+                continue
+            if best_val is None or f < best_val:
+                best_val = f
+                best_cell = cell
+
+        if best_cell is not None:
+            best_cell.fill = cyan_fill
+
+    wb.save(consolidated_path)
+
+def append_average_wer_row(
+    consolidated_path: str,
+    comparison_sheet_name: str,
+) -> None:
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font, PatternFill
+
+    wb = load_workbook(consolidated_path)
+    ws = wb[comparison_sheet_name]
+
+    max_row = ws.max_row
+    max_col = ws.max_column
+
+    # compute per‐column averages (cols 2…max_col)
+    averages: list[float] = []
+    for col in range(2, max_col + 1):
+        vals: list[float] = []
+        for row in range(2, max_row + 1):
+            v = ws.cell(row=row, column=col).value
+            try:
+                vals.append(float(v))
+            except (TypeError, ValueError):
+                continue
+        avg = sum(vals) / len(vals) if vals else 0.0
+        averages.append(avg)
+
+    # append the AVERAGE WER row
+    avg_row = max_row + 1
+    cell0 = ws.cell(row=avg_row, column=1)
+    cell0.value = "AVERAGE WER"
+    cell0.font = Font(bold=True)
+    for i, avg in enumerate(averages, start=2):
+        c = ws.cell(row=avg_row, column=i)
+        c.value = round(avg, 2)
+        c.number_format = "0.00"
+
+    # highlight lowest average in cyan
+    min_val = min(averages)
+    min_col = averages.index(min_val) + 2
+    cyan = PatternFill(fill_type="solid", fgColor="FF00FFFF")
+    ws.cell(row=avg_row, column=min_col).fill = cyan
+
+    wb.save(consolidated_path)
+
+def main(
+    analysis_root_dir: str,
+    extension: str,
+    input_filename_prefix: str,
+    gt_root_dir: str,
+    wer_endpoint: str,
+    output_root_dir: str,
+) -> None:
+    for file_path in get_analysis_files(analysis_root_dir, extension):
+        process_file(
+            file_path,
+            input_filename_prefix,
+            gt_root_dir,
+            wer_endpoint,
+            output_root_dir,
+        )
+
+    create_consolidated_spreadsheet(
+        output_root_dir,
+        ANALYSIS_WORKSHEET,
+        FIRST_SHEET_HEADERS,
+        WER_WORKSHEET,
+        WER_SHEET_HEADERS,
+    )
+    consolidated_path = analysis_root_dir + CONSOLIDATED_SPREADSHEET_NAME
+    wb = load_workbook(consolidated_path)
+    create_wer_comparison(
+        wb,
+        WER_WORKSHEET,
+        WER_COMPARISON,
+    )
+
+    highlight_lowest_wer(
+        consolidated_path,
+        WER_COMPARISON,
+    )
+
+    append_average_wer_row(
+        os.path.join(output_root_dir, CONSOLIDATED_SPREADSHEET_NAME),
+        WER_COMPARISON,
+    )
+
+if __name__ == "__main__":
+    main(INPUT_ANALYSIS_ROOT_DIR,
+         ANALYSIS_FILE_EXTENSION,
+         INPUT_FILENAME_PREFIX,
+         INPUT_GT_ROOT_DIR,
+         WER_ENDPOINT,
+         OUTPUT_SPREADSHEET_ROOT_DIR)
