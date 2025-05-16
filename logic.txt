@@ -9,6 +9,7 @@ from typing import List, Dict
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 
 # file locations & endpoints
 CONSOLIDATED_SPREADSHEET_NAME = "consolidated_analysis.xlsx"
@@ -40,6 +41,46 @@ CONDITIONS_WIDTH: int = 16
 FULL_TRANSCRIPT_WIDTH: int = 30
 GT_WIDTH: int = 30
 WER_WIDTH: int = 8
+
+
+def convert_and_format_column(
+    ws: Worksheet,
+    col_idx: int,
+    start_row: int = 2,
+    fmt: str = "0.00"
+) -> None:
+    """
+    Convert any string values in ws[col_idx] rows [start_row..end] to floats (when possible)
+    and apply the given number format to all numeric cells.
+    """
+    for r in range(start_row, ws.max_row + 1):
+        cell = ws.cell(row=r, column=col_idx)
+        v = cell.value
+        if isinstance(v, str):
+            try:
+                cell.value = float(v)
+            except ValueError:
+                continue
+        if isinstance(cell.value, (int, float)):
+            cell.number_format = fmt
+
+
+def convert_and_format_column_by_header(
+    ws: Worksheet,
+    header: str,
+    start_row: int = 2,
+    fmt: str = "0.00"
+) -> None:
+    """
+    Find the column whose heading in row 1 equals `header`, then
+    convert & format that column.
+    """
+    for idx, cell in enumerate(ws[1], start=1):
+        if cell.value == header:
+            convert_and_format_column(ws, idx, start_row, fmt)
+            return
+    raise ValueError(f"Header {header!r} not found in sheet {ws.title}")
+
 
 def get_analysis_files(root_dir: str, extension: str) -> List[str]:
     return [
@@ -117,7 +158,9 @@ def find_ground_truth(filename: str, gt_root_dir: str) -> str:
     return "no ground truth available"
 
 def calculate_wer(ground_truth: str, transcript: str, wer_endpoint: str) -> str:
-    resp = httpx.post(wer_endpoint, json={"groundTruth": ground_truth, "transcript": transcript}, timeout=5.0)
+    resp = httpx.post(wer_endpoint,
+                      json={"groundTruth": ground_truth, "transcript": transcript},
+                      timeout=5.0)
     text = resp.text.strip()
     try:
         value = float(text)
@@ -191,17 +234,8 @@ def write_wer_sheet(
     ):
         ws.column_dimensions[get_column_letter(idx)].width = width
 
-    # ensure WER column is numeric & formatted to 2 decimals
-    for r in range(2, ws.max_row + 1):
-        cell = ws.cell(row=r, column=5)
-        val = cell.value
-        if isinstance(val, str):
-            try:
-                cell.value = float(val)
-            except ValueError:
-                continue
-        if isinstance(cell.value, (int, float)):
-            cell.number_format = "0.00"
+    # convert & format the WER column by header
+    convert_and_format_column_by_header(ws, "WER")
 
 
 def process_file(file_path: str,
@@ -321,26 +355,16 @@ def create_wer_comparison(
     # set widths
     ws_c.column_dimensions[get_column_letter(1)].width = FILENAME_WIDTH
     for i in range(len(conditions)):
-        ws_c.column_dimensions[get_column_letter(2 + i)].width = WER_WIDTH
+        ws_c.column_dimensions[get_column_letter(2 + i)].width = CONDITIONS_WIDTH
 
-    # convert any text values in condition columns to floats and format
-    for row in ws_c.iter_rows(min_row=2, min_col=2, max_col=ncols):
-        for cell in row:
-            val = cell.value
-            if isinstance(val, str):
-                try:
-                    cell.value = float(val)
-                except ValueError:
-                    continue
-            if isinstance(cell.value, (int, float)):
-                cell.number_format = "0.00"
+    # convert & format each condition column by header
+    for cond in conditions:
+        convert_and_format_column_by_header(ws_c, cond)
 
 def highlight_lowest_wer(
     consolidated_path: str,
     comparison_sheet_name: str,
 ) -> None:
-    from openpyxl import load_workbook
-    from openpyxl.styles import PatternFill
 
     wb = load_workbook(consolidated_path)
     ws = wb[comparison_sheet_name]
