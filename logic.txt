@@ -406,6 +406,19 @@ def main() -> None:
         for row in in_ws.iter_rows(values_only=True):
             copy_ws.append(row)
 
+        # set widths on the copied original sheet
+        copy_ws.column_dimensions['A'].width = 69  # session_id
+        copy_ws.column_dimensions['B'].width = 35  # raw_transcript
+        copy_ws.column_dimensions['C'].width = 35  # Ground Truth Transcript
+        copy_ws.column_dimensions['D'].width = 12  # Hallucination
+
+        # freeze header row, add filters, set fonts
+        copy_ws.freeze_panes = "A2"
+        copy_ws.auto_filter.ref = f"A1:D{copy_ws.max_row}"
+        for row in copy_ws.iter_rows(min_row=1, max_row=copy_ws.max_row, min_col=1, max_col=4):
+            for cell in row:
+                cell.font = Font(name="Aptos", size=9, bold=(cell.row == 1))
+
         mws = add_metrics_sheet(wb_out)
         write_header(mws)
         md = os.path.basename(inp).rsplit(".", 1)[0]
