@@ -1,203 +1,484 @@
-# wer_from_vad_analysis.py
+# asr_metrics_calc.py
+# ingest data from INPUT_SPREADSHEET and write to new filename INPUT_SPREADSHEET_metrics.xlsx
 
 from __future__ import annotations
 import os
 import re
-import httpx
-from typing import List, Dict
-from openpyxl import Workbook
-from openpyxl.styles import Font
+import requests
+import random
+from typing import Optional
+
+from openpyxl import load_workbook, Workbook
+from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.chart import BarChart, Reference
+from openpyxl.drawing.text import ParagraphProperties, CharacterProperties, Font as DrawFont
 
-# file locations & endpoints
-INPUT_ANALYSIS_ROOT_DIR: str = "j:/projects/sheet-logic/"
-ANALYSIS_FILE_EXTENSION: str = ".txt"
-INPUT_GT_ROOT_DIR: str = "j:/tmp/vad/ground_truth/"
-INPUT_FILENAME_PREFIX: str = "customer-side-analysis"
-OUTPUT_SPREADSHEET_ROOT_DIR: str = "j:/projects/sheet-logic/analysis-spreadsheets/"
-WER_ENDPOINT: str = "http://api_for_wer:2517/wer"
+CODE_IS_BEING_TESTED: bool = True
 
-# sheet names
-ANALYSIS_WORKSHEET: str = "analysis"
-WER_WORKSHEET:    str = "WER"
+# monthly consolidation
+DO_MONTHLY_CONSOLIDATION = True # if True, then also generate the monthly consolidation spreadsheet
+SPREADSHEET_PREFIX: str = "ASR"
+WEEKLY_SPREADSHEETS: list[str] = [
+    "ASR_0401thru0405_2025_metrics.xlsx",
+    "ASR_0406thru0410_2025_metrics.xlsx",
+    "ASR_0411thru0417_2025_metrics.xlsx"
+]
 
-# column name globals
-FIRST_SHEET_HEADERS: List[str] = ["filename", "seqNum", "loc", "dur", "transcript"]
-WER_SHEET_HEADERS: List[str] = ["filename", "conditions", "full_transcript", "GT", "WER"]
+# weekly spreadsheet
+ROOT_DIR: str = "j:/projects/sheet-logic/"
+INPUT_SPREADSHEET: str = ROOT_DIR + "ASR_0406thru0410_2025.xlsx"
+TARGET_WORKSHEET: str = "input_worksheet"
 
-# worksheet 1 (analysis)
-FILENAME_WIDTH: int = 12
-SEQNUM_WIDTH: int = 7
-LOC_WIDTH: int = 7
-DUR_WIDTH: int = 5
-TRANSCRIPT_WIDTH: int = 30
+# input worksheet columns
+SESSION_ID_COL_NAME: str         = "session_id"
+RAW_TRANSCRIPT_COL_NAME: str     = "raw_transcript"
+GROUND_TRUTH_COL_NAME: str       = "Ground Truth Transcript"
+HALLUCINATION_COL_NAME: str      = "Hallucination"
 
-# worksheet 2 (wer)
-CONDITIONS_WIDTH: int = 12
-FULL_TRANSCRIPT_WIDTH: int = 60
-GT_WIDTH: int = 60
-WER_WIDTH: int = 8
+# metrics worksheet
+METRICS_WORKSHEET_NAME: str      = "metrics"
+METADATA_COL_NAME: str           = "metadata"
+ENTIRE_COL_NAME: str             = "entire"
+GT_SECTION_TEXT_COL_NAME: str    = "gt section"
+MODEL_SECTION_TEXT_COL_NAME: str = "model text"
 
-def get_analysis_files(root_dir: str, extension: str) -> List[str]:
-    return [
-        os.path.join(root_dir, f)
-        for f in os.listdir(root_dir)
-        if f.endswith(extension)
-    ]
+# metrics computation
+NUMBER_OF_SECTIONS: int          = 5
+WER_POST_ENDPOINT: str           = "https://wer_host:3281/word_error_rate"
 
-def get_suffix_from_filename(file_path: str, input_filename_prefix: str) -> str:
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    if stem.startswith(input_filename_prefix + "-"):
-        return stem[len(input_filename_prefix) + 1 :]
-    return stem
+# visualization worksheet (unused in main now)
+VISUALIZATION_WORKSHEET_NAME: str = "visualization"
+BIN_WIDTH: int                    = 4
+MAX_PERCENT: int                  = 100
 
-def preprocess(text):
+# summary worksheet
+SUMMARY_WORKSHEET_NAME: str               = "summary"
+AVERAGE_WER_COL_NAME: str                 = "AVG_WER"
+SESSION_COUNT_COL_NAME: str               = "num sessions"
+HALLUCINATION_COUNT_COL_NAME: str         = "Hallucination Count"
+HALLUCINATION_AVG_COL_NAME:   str         = "Hallucination Avg"
+
+
+def get_name_of_results_spreadsheet(input_spreadsheet_name: str) -> str:
+    dir_name = os.path.dirname(input_spreadsheet_name)
+    base = os.path.basename(input_spreadsheet_name).rsplit(".", 1)[0]
+    return os.path.join(dir_name, f"{base}_metrics.xlsx")
+
+def preprocess(text: str) -> str:
     if not text:
         return ""
     text = str(text)
-    text = text.lower()
-    text = re.sub(r"[.,\-?…]", " ", text)
-    text = re.sub(r"\{[^}]*\}", "", text)
-    text = re.sub(r"[\[\]]", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    s = text.lower()
+    s = re.sub(r"[.,\-?…]", " ", s)
+    s = re.sub(r"\{[^}]*\}", "", s)
+    s = re.sub(r"[\[\]]", "", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
 
-def get_column_indices(header_cols: List[str], *names: str) -> Dict[str, int]:
-    indices: Dict[str, int] = {}
-    for name in names:
-        if name not in header_cols:
-            raise ValueError(f"Column {name!r} not found in header row")
-        indices[name] = header_cols.index(name)
-    return indices
+def get_wer_from_api(endpoint: str, ground_truth: str, transcript: str) -> float:
+    if CODE_IS_BEING_TESTED:
+        return random.random() * 50
+    try:
+        resp = requests.post(
+            endpoint,
+            json={"groundTruth": ground_truth, "transcript": transcript},
+            verify=False,
+            timeout=5
+        )
+        return float(resp.text.strip())
+    except Exception:
+        return float('nan')
 
-def parse_analysis_file(file_path: str) -> List[Dict[str, str]]:
-    records: List[Dict[str, str]] = []
-    with open(file_path, encoding="utf-8") as f:
-        # read header and build name→index map
-        header_line = next(f)
-        headers = [c.strip() for c in header_line.rstrip("\n").split("|")]
-        idx = get_column_indices(
-            headers,
-            "filename",
-            "seqNum",
-            "loc",
-            "dur",
-            "transcript"
+
+def count_gt_entire_undecipherables(input_ws: Worksheet, session_id: str) -> int:
+    texts = []
+    for row in input_ws.iter_rows(min_row=2, values_only=True):
+        sid = row[0]
+        gt  = row[2]
+        if sid == session_id and gt:
+            texts.append(str(gt))
+    agg = " ".join(texts)
+    return agg.count("{UNDECIPHERABLE}")
+
+
+def count_gt_section_undecipherables(section_text: str) -> int:
+    if not section_text:
+        return 0
+    return section_text.count("{UNDECIPHERABLE}")
+
+
+def add_metrics_sheet(wb: Workbook) -> Worksheet:
+    if METRICS_WORKSHEET_NAME in wb.sheetnames:
+        del wb[METRICS_WORKSHEET_NAME]
+    return wb.create_sheet(METRICS_WORKSHEET_NAME)
+
+
+def write_header(ws: Worksheet) -> None:
+    headers = [
+        METADATA_COL_NAME,
+        SESSION_ID_COL_NAME,
+        "section",
+        GT_SECTION_TEXT_COL_NAME,
+        MODEL_SECTION_TEXT_COL_NAME,
+        "WER"
+    ]
+    for idx, title in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=idx, value=title)
+        cell.font = Font(name="Aptos Narrow", size=9, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.freeze_panes = "A2"
+
+
+def write_metrics_row(
+    ws: Worksheet,
+    metadata: str,
+    session_id: str,
+    section,
+    gt_text: str,
+    model_text: str,
+    wer: float,
+    is_entire: bool = False
+) -> None:
+    row = ws.max_row + 1
+    body_font  = Font(name="Aptos Narrow", size=9)
+    body_align = Alignment(horizontal="left", vertical="center")
+    fill = PatternFill(start_color="00FFFF", end_color="00FFFF", fill_type="solid") if is_entire else None
+
+    values = (
+        metadata,
+        session_id,
+        section,
+        gt_text,
+        model_text,
+        wer
+    )
+    for col_idx, val in enumerate(values, start=1):
+        cell = ws.cell(row=row, column=col_idx, value=val)
+        cell.font      = body_font
+        cell.alignment = body_align
+        if fill:
+            cell.fill = fill
+        if col_idx == 6:
+            cell.number_format = "0.00"
+
+
+def process_sessions(input_ws: Worksheet, metrics_ws: Worksheet, metadata: str) -> None:
+    data = list(input_ws.iter_rows(min_row=2, values_only=True))
+    sessions: dict[str, list[tuple[str, str]]] = {}
+    for row in data:
+        sid, raw, gt = row[0], row[1], row[2]
+        sessions.setdefault(sid, []).append((raw, gt))
+
+    total_sessions = len(sessions)
+    for idx, (sid, entries) in enumerate(sessions.items(), start=1):
+        print(f"processing session {idx} of {total_sessions} (session_id: {sid}) ... THIS_IS_A_TEST_RUN: {CODE_IS_BEING_TESTED}")
+
+        # entire session
+        gt_concat  = " ".join(preprocess(gt) for _, gt in entries)
+        raw_concat = " ".join(preprocess(raw) for raw, _ in entries)
+        wer_entire = get_wer_from_api(WER_POST_ENDPOINT, gt_concat, raw_concat)
+        write_metrics_row(
+            ws             = metrics_ws,
+            metadata       = metadata,
+            session_id     = sid,
+            section        = ENTIRE_COL_NAME,
+            gt_text        = gt_concat,
+            model_text     = raw_concat,
+            wer            = wer_entire,
+            is_entire      = True
         )
 
-        for line in f:
-            cols = [c.strip() for c in line.rstrip("\n").split("|")]
-            records.append({
-                "filename":   cols[idx["filename"]],
-                "seqNum":     cols[idx["seqNum"]],
-                "loc":        cols[idx["loc"]],
-                "dur":        cols[idx["dur"]],
-                "transcript": cols[idx["transcript"]],
-            })
-    return records
+        # split into fixed NUMBER_OF_SECTIONS
+        total = len(entries)
+        base  = total // NUMBER_OF_SECTIONS
+        rem   = total % NUMBER_OF_SECTIONS
+        start = 0
 
-def group_transcripts_by_filename(records: List[Dict[str, str]]) -> Dict[str, List[str]]:
-    groups: Dict[str, List[str]] = {}
-    for r in records:
-        groups.setdefault(r["filename"], []).append(r["transcript"])
-    return groups
+        for section in range(1, NUMBER_OF_SECTIONS + 1):
+            num_rows = base + (1 if section <= rem else 0)
+            if num_rows == 0:
+                break
+            block = entries[start : start + num_rows]
+            start += num_rows
 
-def find_ground_truth(filename: str, gt_root_dir: str) -> str:
-    for fn in os.listdir(gt_root_dir):
-        if fn.endswith("_ground_truth.txt"):
-            prefix = fn[: -len("_ground_truth.txt")]
-            if prefix in filename:
-                with open(os.path.join(gt_root_dir, fn), encoding="utf-8") as gf:
-                    text = preprocess(gf.read())
-                    return text
-    return "no ground truth available"
+            gt_block  = " ".join(gt for _, gt in block)
+            raw_block = " ".join(raw for raw, _ in block)
+            wer_sec   = get_wer_from_api(WER_POST_ENDPOINT, preprocess(gt_block), preprocess(raw_block))
 
-def calculate_wer(ground_truth: str, transcript: str, wer_endpoint: str) -> str:
-    resp = httpx.post(wer_endpoint,
-                      json={"groundTruth": ground_truth, "transcript": transcript},
-                      timeout=1.0)
-    text = resp.text.strip()
+            write_metrics_row(
+                ws             = metrics_ws,
+                metadata       = metadata,
+                session_id     = sid,
+                section        = section,
+                gt_text        = gt_block,
+                model_text     = raw_block,
+                wer            = wer_sec
+            )
+
+def style_columns(ws: Worksheet) -> None:
+    widths = {
+        1: 20,  # metadata
+        2: 65,  # session_id
+        3:  9,  # section
+        4: 63,  # gt section
+        5: 63,  # model text
+        6:  9   # WER
+    }
+    for col, w in widths.items():
+        ws.column_dimensions[get_column_letter(col)].width = w
+    ws.auto_filter.ref = f"A1:F{ws.max_row}"
+
+def count_hallucinations(input_ws: Worksheet, session_id: str) -> int:
+    hdr = [c.value for c in input_ws[1]]
     try:
-        value = float(text)
-        return f"{value:.2f}"
+        sid_idx = hdr.index(SESSION_ID_COL_NAME)
+        hall_idx = hdr.index(HALLUCINATION_COL_NAME)
     except ValueError:
-        return text
+        return 0
+    cnt = 0
+    for row in input_ws.iter_rows(min_row=2, values_only=True):
+        if row[sid_idx] == session_id and row[hall_idx]:
+            cnt += 1
+    return cnt
 
-def write_analysis_sheet(wb: Workbook, records: List[Dict[str, str]]) -> None:
-    ws = wb.active
-    ws.title = ANALYSIS_WORKSHEET
-    ws.append(FIRST_SHEET_HEADERS)
-    for r in records:
-        ws.append([r[h] for h in FIRST_SHEET_HEADERS])
-    header_font = Font(name="Aptos", size=9, bold=True)
-    data_font = Font(name="Aptos", size=9)
-    for cell in ws[1]:
-        cell.font = header_font
-    for row in ws.iter_rows(min_row=2, max_col=len(FIRST_SHEET_HEADERS)):
+def add_hallucination_column(metrics_ws: Worksheet, input_ws: Worksheet) -> None:
+    hdr_font = Font(name="Aptos Narrow", size=9, bold=True)
+    body_font = Font(name="Aptos Narrow", size=9)
+    align = Alignment(horizontal="left", vertical="center")
+
+    col = metrics_ws.max_column + 1
+    metrics_ws.cell(row=1, column=col, value=HALLUCINATION_COL_NAME).font = hdr_font
+
+    for r in range(2, metrics_ws.max_row + 1):
+        if metrics_ws.cell(row=r, column=3).value == ENTIRE_COL_NAME:
+            sid = metrics_ws.cell(row=r, column=2).value
+            v = count_hallucinations(input_ws, sid)
+            cell = metrics_ws.cell(row=r, column=col, value=v)
+            cell.font = body_font
+            cell.alignment = align
+
+    metrics_ws.column_dimensions[get_column_letter(col)].width = 12
+    metrics_ws.auto_filter.ref = f"A1:{get_column_letter(col)}{metrics_ws.max_row}"
+
+def calculate_hallucination_stats(metrics_ws: Worksheet) -> tuple[int, float]:
+    headers = [c.value for c in metrics_ws[1]]
+    hall_idx = headers.index(HALLUCINATION_COL_NAME)
+    total = sessions = 0
+    for row in metrics_ws.iter_rows(min_row=2, values_only=True):
+        if row[2] == ENTIRE_COL_NAME and isinstance(row[hall_idx], (int, float)):
+            total   += int(row[hall_idx])
+            sessions += 1
+    avg = total / sessions if sessions else 0.0
+    return total, avg
+
+
+# added to fix unresolved reference
+def calculate_mean_wer(metrics_ws: Worksheet) -> float:
+    wers = [
+        row[5]
+        for row in metrics_ws.iter_rows(min_row=2, values_only=True)
+        if row[2] == ENTIRE_COL_NAME and isinstance(row[5], (int, float))
+    ]
+    return sum(wers) / len(wers) if wers else 0.0
+
+
+def add_summary_sheet(wb: Workbook) -> Worksheet:
+    if SUMMARY_WORKSHEET_NAME in wb.sheetnames:
+        del wb[SUMMARY_WORKSHEET_NAME]
+    return wb.create_sheet(SUMMARY_WORKSHEET_NAME)
+
+
+def write_summary(metrics_ws: Worksheet, summary_ws: Worksheet) -> None:
+    headers = [
+        METADATA_COL_NAME,
+        AVERAGE_WER_COL_NAME,
+        SESSION_COUNT_COL_NAME,
+        HALLUCINATION_COUNT_COL_NAME,
+        HALLUCINATION_AVG_COL_NAME
+    ]
+    for idx, title in enumerate(headers, start=1):
+        cell = summary_ws.cell(row=1, column=idx, value=title)
+        cell.font = Font(name="Aptos", size=11, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    metadata = metrics_ws.cell(row=2, column=1).value
+    mean_wer = calculate_mean_wer(metrics_ws)
+    total_hall, avg_hall = calculate_hallucination_stats(metrics_ws)
+    avg_hall = round(avg_hall, 2)
+
+    summary_ws.append([
+        metadata,
+        mean_wer,
+        len([r for r in metrics_ws.iter_rows(min_row=2, values_only=True) if r[2] == ENTIRE_COL_NAME]),
+        total_hall,
+        avg_hall
+    ])
+
+    # ensure 2 decimal places for AVG_WER
+    summary_ws.cell(row=2, column=2).number_format = "0.00"
+
+    for row in summary_ws.iter_rows(min_row=2, max_row=summary_ws.max_row):
         for cell in row:
-            cell.font = data_font
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(FIRST_SHEET_HEADERS))}{len(records) + 1}"
-    for idx, w in enumerate([FILENAME_WIDTH, SEQNUM_WIDTH, LOC_WIDTH, DUR_WIDTH, TRANSCRIPT_WIDTH], start=1):
-        ws.column_dimensions[get_column_letter(idx)].width = w
+            cell.font = Font(name="Aptos", size=11)
+            cell.alignment = Alignment(horizontal="left", vertical="center")
 
-def write_wer_sheet(
-    wb: Workbook,
-    conditions: str,
-    records: List[Dict[str, str]],
-    gt_root_dir: str,
-    wer_endpoint: str,
-) -> None:
-    ws = wb.create_sheet(WER_WORKSHEET)
-    ws.append(WER_SHEET_HEADERS)
-    groups = group_transcripts_by_filename(records)
-    header_font = Font(name="Aptos", size=9, bold=True)
-    data_font = Font(name="Aptos", size=9)
-    for fn, transcripts in groups.items():
-        full = " ".join(transcripts)
-        gt = find_ground_truth(fn, gt_root_dir)
-        wer = calculate_wer(gt, full, wer_endpoint)
-        ws.append([fn, conditions, full, gt, wer])
-    for cell in ws[1]:
-        cell.font = header_font
-    for row in ws.iter_rows(min_row=2, max_col=len(WER_SHEET_HEADERS)):
-        for cell in row:
-            cell.font = data_font
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(WER_SHEET_HEADERS))}{len(groups) + 1}"
-    for idx, w in enumerate(
-        [FILENAME_WIDTH, CONDITIONS_WIDTH, FULL_TRANSCRIPT_WIDTH, GT_WIDTH, WER_WIDTH], start=1
-    ):
-        ws.column_dimensions[get_column_letter(idx)].width = w
+    summary_ws.column_dimensions["A"].width = 30
+    summary_ws.column_dimensions["B"].width = 13
+    summary_ws.column_dimensions["C"].width = 16
+    summary_ws.column_dimensions["D"].width = 22
+    summary_ws.column_dimensions["E"].width = 19
 
-def process_file(file_path: str,
-                 input_filename_prefix: str,
-                 gt_root_dir: str,
-                 wer_endpoint: str,
-                 output_root_dir: str) -> None:
-    records = parse_analysis_file(file_path)
-    suffix = get_suffix_from_filename(file_path, input_filename_prefix)
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    output_path = os.path.join(output_root_dir, f"{stem}.xlsx")
-    wb = Workbook()
-    write_analysis_sheet(wb, suffix, records)
-    write_wer_sheet(wb, suffix, records, gt_root_dir, wer_endpoint)
-    wb.save(output_path)
 
-def main(analysis_root_dir: str,
-         extension: str,
-         input_filename_prefix: str,
-         gt_root_dir: str,
-         wer_endpoint: str,
-         output_root_dir: str) -> None:
-    files = get_analysis_files(analysis_root_dir, extension)
-    for file_path in files:
-        process_file(file_path, input_filename_prefix, gt_root_dir, wer_endpoint, output_root_dir)
+def get_monthly_filepath(
+    root_dir: str,
+    weekly_files: list[str],
+    spreadsheet_prefix: str
+) -> str:
+    dates = []
+    for fname in weekly_files:
+        base = os.path.basename(fname).rsplit(".", 1)[0]
+        parts = base.split("_")
+        # parts = ["ASR","0401thru0405","2025","metrics"]
+        start, end = parts[1].split("thru")
+        year = parts[2]
+        dates.append((start, end, year))
+    earliest = min(d[0] for d in dates)
+    latest   = max(d[1] for d in dates)
+    year     = dates[0][2]
+    filename = f"{spreadsheet_prefix}_{earliest}thru{latest}_{year}_monthly_metrics.xlsx"
+    return os.path.join(root_dir, filename)
+
+def create_monthly_worksheet(
+    root_dir: str,
+    weekly_files: list[str],
+    spreadsheet_prefix: str
+) -> str:
+    monthly_path = get_monthly_filepath(root_dir, weekly_files, spreadsheet_prefix)
+    if os.path.exists(monthly_path):
+        os.remove(monthly_path)
+    monthly_wb = Workbook()
+    del monthly_wb[monthly_wb.sheetnames[0]]
+
+    # 1) aggregate "metrics" sheets
+    mon_metrics = monthly_wb.create_sheet(METRICS_WORKSHEET_NAME)
+    first = True
+    for wf in weekly_files:
+        wb_w = load_workbook(os.path.join(root_dir, wf))
+        ws_w = wb_w[METRICS_WORKSHEET_NAME]
+        for i, row in enumerate(ws_w.iter_rows(values_only=True), start=1):
+            if i == 1 and not first:
+                continue
+            mon_metrics.append(row)
+        first = False
+    # style "metrics"
+    for cell in mon_metrics[1]:
+        cell.font = Font(name="Aptos", size=9, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    mon_metrics.freeze_panes = "A2"
+    mon_metrics.auto_filter.ref = f"A1:{get_column_letter(mon_metrics.max_column)}{mon_metrics.max_row}"
+    for col, w in {"A":20,"B":65,"C":9,"D":63,"E":63,"F":8,"G":12}.items():
+        mon_metrics.column_dimensions[col].width = w
+
+    # enforce 2 decimal places for WER in monthly metrics
+    for row in mon_metrics.iter_rows(min_row=2, max_row=mon_metrics.max_row):
+        cell = row[5]  # column F
+        if isinstance(cell.value, (int, float)):
+            cell.number_format = "0.00"
+
+    # 2) (visualization removed)
+
+    # 3) aggregate "summary" sheets
+    mon_summary = monthly_wb.create_sheet(SUMMARY_WORKSHEET_NAME)
+    first = True
+    for wf in weekly_files:
+        wb_w = load_workbook(os.path.join(root_dir, wf))
+        ws_w = wb_w[SUMMARY_WORKSHEET_NAME]
+        for i, row in enumerate(ws_w.iter_rows(values_only=True), start=1):
+            if i == 1 and not first:
+                continue
+            mon_summary.append(row)
+        first = False
+    # style header of "summary"
+    for cell in mon_summary[1]:
+        cell.font = Font(name="Aptos", size=9, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    mon_summary.freeze_panes = "A2"
+    mon_summary.auto_filter.ref = f"A1:{get_column_letter(mon_summary.max_column)}{mon_summary.max_row}"
+    for col, w in {"A":36, "B":11, "C":14, "D":19, "E":17}.items():
+        mon_summary.column_dimensions[col].width = w
+
+    # consolidated summary row
+    mon_summary.append([None] * 5)
+    entries = list(mon_summary.iter_rows(min_row=2, max_row=1 + len(weekly_files), values_only=True))
+    avg_wers = [r[1] for r in entries]
+    num_sess = sum(int(r[2]) for r in entries)
+    total_hall = sum(int(r[3]) for r in entries)
+    avg_hall = round(total_hall / num_sess, 2) if num_sess else 0.0
+    meta_label = f"{SPREADSHEET_PREFIX}_{monthly_path.rsplit('/', 1)[-1].split('_',1)[1]}"
+    mon_summary.append([
+        meta_label,
+        round(sum(avg_wers) / len(avg_wers), 2) if avg_wers else 0.0,
+        num_sess,
+        total_hall,
+        avg_hall
+    ])
+
+    last = mon_summary.max_row
+    fill = PatternFill(start_color="00FFFF", end_color="00FFFF", fill_type="solid")
+    for r in mon_summary.iter_rows(min_row=1, max_row=last):
+        for c in r:
+            bold = (c.row == 1)
+            c.font = Font(name="Aptos", size=9, bold=bold)
+            if c.row == last:
+                c.fill = fill
+
+    monthly_wb.save(monthly_path)
+    return monthly_path
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Main program
+# ────────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+
+    # load input
+    input_wb = load_workbook(INPUT_SPREADSHEET)
+    in_ws     = input_wb[TARGET_WORKSHEET]
+
+    # prepare results workbook
+    results_path = get_name_of_results_spreadsheet(INPUT_SPREADSHEET)
+    if os.path.exists(results_path):
+        os.remove(results_path)
+
+    # 0) replicate the business inputs to the first worksheet in metrics spreadsheet
+    results_wb = Workbook()
+    input_copy_ws = results_wb.active
+    input_copy_ws.title = TARGET_WORKSHEET
+    for row in in_ws.iter_rows(values_only=True):
+        input_copy_ws.append(row)
+
+    # 1) metrics sheet
+    metrics_ws = add_metrics_sheet(results_wb)
+    write_header(metrics_ws)
+    metadata_value = os.path.basename(INPUT_SPREADSHEET).rsplit(".", 1)[0]
+    process_sessions(in_ws, metrics_ws, metadata_value)
+    style_columns(metrics_ws)
+
+    # update for hallucinations
+    add_hallucination_column(metrics_ws, in_ws)
+
+    summary_ws = add_summary_sheet(results_wb)
+    write_summary(metrics_ws, summary_ws)
+
+    # save all
+    results_wb.save(results_path)
+    print(f"Saved metrics & summary to {results_path}")
+
+    if DO_MONTHLY_CONSOLIDATION:
+        monthly_path = create_monthly_worksheet(ROOT_DIR, WEEKLY_SPREADSHEETS, SPREADSHEET_PREFIX)
+        print(f"Saved monthly consolidated metrics to {monthly_path}")
 
 if __name__ == "__main__":
-    main(INPUT_ANALYSIS_ROOT_DIR,
-         ANALYSIS_FILE_EXTENSION,
-         INPUT_FILENAME_PREFIX,
-         INPUT_GT_ROOT_DIR,
-         WER_ENDPOINT,
-         OUTPUT_SPREADSHEET_ROOT_DIR)
+    main()
