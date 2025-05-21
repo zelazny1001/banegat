@@ -1,0 +1,40 @@
+def process_sessions(input_ws: Worksheet, metrics_ws: Worksheet, metadata: str) -> None:
+    # only keep rows whose session_id (col A) is non-blank after stripping whitespace
+    data = [
+        row
+        for row in input_ws.iter_rows(min_row=2, values_only=True)
+        if str(row[0] or "").strip()
+    ]
+    # nothing to do if no real session_id
+    if not data:
+        print(f"No session_id found – skipping process_sessions for {metadata}")
+        return
+
+    # group entries by cleaned session_id
+    sessions: dict[str, list[tuple[str, str]]] = {}
+    for sid, raw, gt, *rest in data:
+        sid = str(sid).strip()
+        sessions.setdefault(sid, []).append((raw, gt))
+
+    for sid, entries in sessions.items():
+        # entire-session metrics
+        gt_all  = " ".join(preprocess(gt)  for _, gt in entries)
+        raw_all = " ".join(preprocess(raw) for raw, _ in entries)
+        wer_ent = get_wer_from_api(WER_POST_ENDPOINT, gt_all, raw_all)
+        write_metrics_row(metrics_ws, metadata, sid, ENTIRE_COL_NAME, gt_all, raw_all, wer_ent, True)
+
+        # sectioned metrics
+        total = len(entries)
+        base  = total // NUMBER_OF_SECTIONS
+        rem   = total % NUMBER_OF_SECTIONS
+        start = 0
+        for sec in range(1, NUMBER_OF_SECTIONS + 1):
+            cnt = base + (1 if sec <= rem else 0)
+            if cnt == 0:
+                break
+            block  = entries[start : start + cnt]
+            start += cnt
+            gt_blk = " ".join(preprocess(gt)  for _, gt in block)
+            raw_blk= " ".join(preprocess(raw) for raw, _ in block)
+            wer_s  = get_wer_from_api(WER_POST_ENDPOINT, gt_blk, raw_blk)
+            write_metrics_row(metrics_ws, metadata, sid, sec, gt_blk, raw_blk, wer_s)
