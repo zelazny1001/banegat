@@ -37,30 +37,26 @@ def write_output(data: List[Dict[str, Any]]):
     wb = Workbook()
     ws = wb.active
     ws.title = OUTPUT_WORKSHEET
-    headers = ["index", "mask_word", "utterance", "expected", "predicted", "score", "additional_data"]
+    headers = ["index", "mask_word", "utterance", "expected", "predicted", "score"]
     ws.append(headers)
     for col_idx, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_idx)
         cell.font = Font(name="Arial", size=9, bold=True)
     for row_idx, row in enumerate(data, start=2):
-        ws.cell(row=row_idx, column=1, value=row.get("index")).font = Font(name="Arial", size=9)
-        ws.cell(row=row_idx, column=2, value=row.get("mask_word")).font = Font(name="Arial", size=9)
-        ws.cell(row=row_idx, column=3, value=row.get("utterance")).font = Font(name="Arial", size=9)
-        ws.cell(row=row_idx, column=4, value=row.get("expected")).font = Font(name="Arial", size=9)
-        ws.cell(row=row_idx, column=5, value=row.get("predicted")).font = Font(name="Arial", size=9)
-        ws.cell(row=row_idx, column=6, value=row.get("score")).font = Font(name="Arial", size=9)
-        ws.cell(row=row_idx, column=7, value=row.get("additional_data")).font = Font(name="Arial", size=9)
+        for col_idx, header in enumerate(headers, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=row.get(header)).font = Font(name="Arial", size=9)
+
     last_col = get_column_letter(len(headers))
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{last_col}{len(data)+1}"
-    widths = [7, 12, 60, 35, 35, 12, 200]
+    widths = [7, 12, 60, 35, 35, 12]
     for idx, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(idx)].width = width
     wb.save(path)
 
 def write_csv(data: List[Dict[str, Any]]):
     csv_path = os.path.join(OUTPUT_FOLDER, os.path.splitext(OUTPUT_SPREADSHEET)[0] + ".csv")
-    headers = ["index", "mask_word", "utterance", "expected", "predicted", "score", "additional_data"]
+    headers = ["index", "mask_word", "utterance", "expected", "predicted", "score"]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, delimiter="|")
         writer.writerow(headers)
