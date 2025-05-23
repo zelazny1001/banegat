@@ -1,4 +1,8 @@
 # sensitivity_set_expected_intent.py
+# given sensitivity input : "index | mask_word | utterance | predicted"
+# or "index | mask_word | utterance | predicted | score"
+# return output spreadsheet and also .csv that computes and includes "expected" column:
+# "index|mask_word|utterance|expected|predicted|score"
 
 from __future__ import annotations
 import os
@@ -8,20 +12,31 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
+LOAD_FROM_FLAT_FILE = True # if False, then load from spreadsheet
 INPUT_FOLDER = "j:/projects/sheet-logic/"
 INPUT_SPREADSHEET = "sensitivity-test.xlsx"
 INPUT_WORKSHEET = "sensitivity_test_utterances"
 OUTPUT_FOLDER = INPUT_FOLDER
-OUTPUT_SPREADSHEET = "sensitivity-test-out.xlsx"
+OUTPUT_SPREADSHEET = "sensitivity-from-flat-test-out.xlsx"
 OUTPUT_WORKSHEET = "sensitivity_test_utterances"
+CSV_FILE_PATH = "j:/projects/sheet-logic/sensitivity_input_data.txt"
 
-def load_data() -> List[Dict[str, Any]]:
+def load_data_from_spreadsheet() -> List[Dict[str, Any]]:
     path = os.path.join(INPUT_FOLDER, INPUT_SPREADSHEET)
     wb = load_workbook(path)
     ws = wb[INPUT_WORKSHEET]
     rows = list(ws.iter_rows(values_only=True))
     header = rows[0]
     return [dict(zip(header, row)) for row in rows[1:]]
+
+def load_data_from_flat_file(file_path: str) -> List[Dict[str, Any]]:
+    with open(file_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter="|")
+        data = []
+        for row in reader:
+            row["score"] = "-"
+            data.append(row)
+        return data
 
 def compute_expected(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     expected_map: Dict[int, str] = {}
@@ -64,7 +79,10 @@ def write_csv(data: List[Dict[str, Any]]):
             writer.writerow([row.get(col, "") for col in headers])
 
 def main():
-    data = load_data()
+    if LOAD_FROM_FLAT_FILE:
+        data = load_data_from_flat_file(CSV_FILE_PATH)
+    else:
+        data = load_data_from_spreadsheet()
     processed = compute_expected(data)
     write_output(processed)
     write_csv(processed)
