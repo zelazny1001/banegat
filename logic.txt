@@ -11,8 +11,8 @@ import csv
 import numpy as np
 from sklearn import svm
 from sklearn.base import clone
+from sklearn.svm import LinearSVC
 from sklearn.feature_extraction import DictVectorizer
-from sklearn.model_selection import cross_val_predict
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
@@ -84,13 +84,6 @@ def cross_val_predict_with_progress(model, X, y, cv_folds):
         model_clone.fit(X[train_idx], y[train_idx])
         y_pred[test_idx] = model_clone.predict(X[test_idx])
     return y_pred
-
-
-from sklearn.feature_extraction import DictVectorizer
-from sklearn.preprocessing import LabelEncoder
-from sklearn.svm import LinearSVC
-from sklearn.model_selection import cross_val_predict
-
 
 def train_svm_model_with_cv(
         features: list[dict],
