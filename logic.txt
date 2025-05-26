@@ -47,6 +47,8 @@ def cleanse_feature_string(feature_str: str) -> str:
             i += 1
     return cleaned.strip()
 
+from collections import Counter
+
 def cleanup_training_data_features(input_filepath: str, output_filepath: str, min_count: int = 5):
     all_rows = []
     with open(input_filepath, encoding='utf-8') as fin:
@@ -61,21 +63,24 @@ def cleanup_training_data_features(input_filepath: str, output_filepath: str, mi
             features = parts[1].strip()
             intent = parts[2].strip()
             cleaned_features = cleanse_feature_string(features)
+            if not cleaned_features:
+                print(f"Skipping row with empty features after cleansing on line {idx}")
+                continue
             if cleaned_features != features:
                 print(f"Line {idx}: changed'{features}' to '{cleaned_features}'")
             all_rows.append((utterance, cleaned_features, intent))
 
     intent_counts = Counter(intent for _, _, intent in all_rows)
     retained = [row for row in all_rows if intent_counts[row[2]] >= min_count]
-    excluded = len(all_rows) - len(retained)
+    excluded_by_intent = len(all_rows) - len(retained)
 
     with open(output_filepath, 'w', encoding='utf-8') as fout:
         fout.write(header + '\n')
         for utterance, features, intent in retained:
             fout.write(f"{utterance} | {features} | {intent}\n")
 
-    print(f"Number of Lines Cleansed: {sum(1 for orig, new, _ in zip(all_rows, retained) if orig != new)}")
-    print(f"Excluded {excluded} lines with intent count < {min_count}")
+    print(f"Number of Lines Cleansed: {len(all_rows)}")
+    print(f"Excluded {excluded_by_intent} lines with intent count < {min_count}")
 
 def load_training_data(path: str, header: str) -> tuple[list[dict], list[str]]:
     with open(path, encoding='utf-8') as f:
