@@ -1,4 +1,4 @@
-# svm_model_trainer.py
+# svm_trainer.py
 
 from __future__ import annotations
 import pickle
@@ -9,10 +9,12 @@ from sklearn.model_selection import cross_val_predict
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 
-TRAINING_DATA_PATH = "j:/tmp/svm/features.txt"
+TRAINING_ROOT_DIR = "/tmp/svm/training/"
+TRAINING_DATA_PATH = TRAINING_ROOT_DIR + "features.txt"
+MODEL_OUTPUT_PATH = TRAINING_ROOT_DIR + "svm.model"
+MODEL_EVAL_REPORT_PATH = TRAINING_ROOT_DIR + "svm_eval_report.txt"
+
 TRAINING_DATA_HEADER = "utterance | features | intent"
-MODEL_OUTPUT_PATH = "j:/tmp/svm/svm.model"
-MODEL_EVAL_REPORT_PATH = "j:/tmp/svm/svm_eval_report.txt"
 DEFAULT_CV_FOLDS = 5
 
 def load_training_data(path: str, header: str) -> tuple[list[dict], list[str]]:
@@ -21,15 +23,17 @@ def load_training_data(path: str, header: str) -> tuple[list[dict], list[str]]:
     assert lines[0] == header
     features = []
     labels = []
-    for line in lines[1:]:
-        parts = [x.strip() for x in line.split('|')]
-        feature_str = parts[1]
-        if feature_str.startswith('[') and feature_str.endswith(']'):
-            feature_str = feature_str[1:-1]
-        items = [item.strip().strip("'") for item in feature_str.split(',') if item.strip()]
-        feats = dict(pair.split('=') for pair in items if '=' in pair)
-        features.append(feats)
-        labels.append(parts[2])
+    for idx, line in enumerate(lines[1:], start=2):
+        try:
+            parts = [x.strip() for x in line.split('|')]
+            if len(parts) != 3:
+                print(f"Malformed row on line {idx}: {line}")
+                continue
+            feats = dict(pair.split('=') for pair in parts[1].split('%') if '=' in pair)
+            features.append(feats)
+            labels.append(parts[2])
+        except Exception as e:
+            print(f"Error processing line {idx}: {line} – {e}")
     return features, labels
 
 def train_svm_model_with_cv(
@@ -99,10 +103,10 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-=========================
 
-# svm_model_predictor.py
+#================================================
+
+# svm_predictor.py
 
 from __future__ import annotations
 import pickle
@@ -110,9 +114,12 @@ from sklearn import svm
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.preprocessing import LabelEncoder
 
-MODEL_OUTPUT_PATH = "j:/tmp/svm/svm.model"
-SVM_TEST_DATA_PATH = "j:/tmp/svm/test_data.txt"
-SVM_PREDICTED_RESULTS_PATH = "j:/tmp/svm/svm_predicted_results.txt"
+PREDICTOR_ROOT_DIR = "/tmp/svm/predictor/"
+MODEL_ROOT_DIR = "/tmp/svm/training"
+MODEL_PATH = MODEL_ROOT_DIR + "svm.model"
+SVM_TEST_DATA_PATH = PREDICTOR_ROOT_DIR + "test_data.txt"
+SVM_PREDICTED_RESULTS_PATH = PREDICTOR_ROOT_DIR + "svm_predicted_results.txt"
+
 TEST_DATA_HEADER = "utterance | features"
 SVM_PREDICTED_DATA_HEADER = "utterance | features | score"
 
@@ -126,10 +133,20 @@ def load_test_data(path: str, header: str) -> list[tuple[str, str, dict]]:
         lines = [line.strip() for line in f if line.strip()]
     assert lines[0] == header
     data = []
-    for line in lines[1:]:
-        parts = [x.strip() for x in line.split('|')]
-        feats = dict(pair.split('=') for pair in parts[1].split('%') if '=' in pair)
-        data.append((parts[0], parts[1], feats))
+    for idx, line in enumerate(lines[1:], start=2):
+        try:
+            parts = [x.strip() for x in line.split('|')]
+            if len(parts) != 2:
+                print(f"Malformed row on line {idx}: {line}")
+                continue
+            feature_str = parts[1]
+            if feature_str.startswith('[') and feature_str.endswith(']'):
+                feature_str = feature_str[1:-1]
+            items = [item.strip().strip("'") for item in feature_str.split(',') if item.strip()]
+            feats = dict(pair.split('=') for pair in items if '=' in pair)
+            data.append((parts[0], parts[1], feats))
+        except Exception as e:
+            print(f"Error processing line {idx}: {line} – {e}")
     return data
 
 def get_svm_predictions(
@@ -151,7 +168,7 @@ def svm_write_predictions_to_file(results: list[tuple[str, str, float]], path: s
     print(f"Predictions written to {path}")
 
 def main():
-    model_path = MODEL_OUTPUT_PATH
+    model_path = MODEL_PATH
     test_data_path = SVM_TEST_DATA_PATH
     predicted_output_path = SVM_PREDICTED_RESULTS_PATH
     test_data_header = TEST_DATA_HEADER
@@ -165,3 +182,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
