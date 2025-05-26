@@ -5,9 +5,13 @@ import pickle
 import argparse
 from datetime import datetime
 from collections import Counter
+from tqdm import tqdm
+import numpy as np
 from sklearn import svm
+from sklearn.base import clone
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.model_selection import cross_val_predict
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 
@@ -108,6 +112,15 @@ def summarize_intents(max_count: int, labels: list[str]):
         if count <= max_count:
             print(f"{intent}: {count}")
 
+def cross_val_predict_with_progress(model, X, y, cv_folds):
+    skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+    y_pred = np.empty_like(y)
+    for train_idx, test_idx in tqdm(skf.split(X, y), total=cv_folds, desc="Cross-validation"):
+        model_clone = clone(model)
+        model_clone.fit(X[train_idx], y[train_idx])
+        y_pred[test_idx] = model_clone.predict(X[test_idx])
+    return y_pred
+
 def train_svm_model_with_cv(
     features: list[dict],
     labels: list[str],
@@ -125,7 +138,7 @@ def train_svm_model_with_cv(
 
     model = svm.SVC(probability=True)
     log_step(f"Running {cv_folds}-fold cross-validation...")
-    y_pred = cross_val_predict(model, X, y, cv=cv_folds)
+    y_pred = y_pred = cross_val_predict_with_progress(model, X, y, cv_folds) #cross_val_predict(model, X, y, cv=cv_folds)
 
     log_step("Fitting final model to all data...")
     model.fit(X, y)
@@ -171,7 +184,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--cv_folds', type=int, default=DEFAULT_CV_FOLDS, help='Number of cross-validation folds')
     return parser.parse_args()
 
-def main():
+def main3():
     args = parse_args()
     training_data_path = TRAINING_DATA_PATH
     training_data_header = TRAINING_DATA_HEADER
@@ -190,7 +203,7 @@ def main():
     report_cross_validation_metrics(y_true, y_pred, label_encoder, model_eval_report_path, cv_folds)
     write_svm_model_to_file(model, vectorizer, encoder, model_output_path)
 
-def main2():
+def main():
     print(f"about to read and cleanse features file...")
     cleanup_training_data_features(TRAINING_DATA_PATH, CLEANSED_DATA_PATH)
     features, labels = load_training_data(CLEANSED_DATA_PATH, TRAINING_DATA_HEADER)
