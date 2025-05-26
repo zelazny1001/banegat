@@ -1,0 +1,167 @@
+# svm_model_trainer.py
+
+from __future__ import annotations
+import pickle
+import argparse
+from sklearn import svm
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.model_selection import cross_val_predict
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
+
+TRAINING_DATA_PATH = "j:/tmp/svm/features.txt"
+TRAINING_DATA_HEADER = "utterance | features | intent"
+MODEL_OUTPUT_PATH = "j:/tmp/svm/svm.model"
+MODEL_EVAL_REPORT_PATH = "j:/tmp/svm/svm_eval_report.txt"
+DEFAULT_CV_FOLDS = 5
+
+def load_training_data(path: str, header: str) -> tuple[list[dict], list[str]]:
+    with open(path, encoding='utf-8') as f:
+        lines = [line.strip() for line in f if line.strip()]
+    assert lines[0] == header
+    features = []
+    labels = []
+    for line in lines[1:]:
+        parts = [x.strip() for x in line.split('|')]
+        feature_str = parts[1]
+        if feature_str.startswith('[') and feature_str.endswith(']'):
+            feature_str = feature_str[1:-1]
+        items = [item.strip().strip("'") for item in feature_str.split(',') if item.strip()]
+        feats = dict(pair.split('=') for pair in items if '=' in pair)
+        features.append(feats)
+        labels.append(parts[2])
+    return features, labels
+
+def train_svm_model_with_cv(
+    features: list[dict],
+    labels: list[str],
+    cv_folds: int
+) -> tuple[svm.SVC, DictVectorizer, LabelEncoder, list[int], list[int], LabelEncoder]:
+    vectorizer = DictVectorizer(sparse=False)
+    X = vectorizer.fit_transform(features)
+    label_encoder = LabelEncoder()
+    y = label_encoder.fit_transform(labels)
+    model = svm.SVC(probability=True)
+    y_pred = cross_val_predict(model, X, y, cv=cv_folds)
+    model.fit(X, y)
+    return model, vectorizer, label_encoder, y, y_pred, label_encoder
+
+def report_cross_validation_metrics(
+    y_true: list[int],
+    y_pred: list[int],
+    label_encoder: LabelEncoder,
+    report_path: str,
+    cv_folds: int
+):
+    acc = accuracy_score(y_true, y_pred)
+    precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average='weighted')
+    report = classification_report(y_true, y_pred, target_names=label_encoder.classes_)
+    print(f"CV Accuracy: {acc:.4f}")
+    print(f"CV Precision: {precision:.4f}")
+    print(f"CV Recall: {recall:.4f}")
+    print(f"CV F1 Score: {f1:.4f}")
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(f"Cross-Validation Report (Folds={cv_folds})\n")
+        f.write(f"Accuracy: {acc:.4f}\n")
+        f.write(f"Precision: {precision:.4f}\n")
+        f.write(f"Recall: {recall:.4f}\n")
+        f.write(f"F1 Score: {f1:.4f}\n\n")
+        f.write(report)
+    print(f"Evaluation report saved to {report_path}")
+
+def write_svm_model_to_file(
+    model: svm.SVC,
+    vectorizer: DictVectorizer,
+    encoder: LabelEncoder,
+    path: str
+):
+    with open(path, 'wb') as f:
+        pickle.dump({'model': model, 'vectorizer': vectorizer, 'label_encoder': encoder}, f)
+    print(f"Model saved to {path}")
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cv_folds', type=int, default=DEFAULT_CV_FOLDS, help='Number of cross-validation folds')
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    training_data_path = TRAINING_DATA_PATH
+    training_data_header = TRAINING_DATA_HEADER
+    model_output_path = MODEL_OUTPUT_PATH
+    model_eval_report_path = MODEL_EVAL_REPORT_PATH
+    cv_folds = args.cv_folds
+    features, labels = load_training_data(training_data_path, training_data_header)
+    print(f"Loaded {len(features)} training samples")
+    model, vectorizer, encoder, y_true, y_pred, label_encoder = train_svm_model_with_cv(features, labels, cv_folds)
+    report_cross_validation_metrics(y_true, y_pred, label_encoder, model_eval_report_path, cv_folds)
+    write_svm_model_to_file(model, vectorizer, encoder, model_output_path)
+
+if __name__ == "__main__":
+    main()
+    
+=========================
+
+# svm_model_predictor.py
+
+from __future__ import annotations
+import pickle
+from sklearn import svm
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.preprocessing import LabelEncoder
+
+MODEL_OUTPUT_PATH = "j:/tmp/svm/svm.model"
+SVM_TEST_DATA_PATH = "j:/tmp/svm/test_data.txt"
+SVM_PREDICTED_RESULTS_PATH = "j:/tmp/svm/svm_predicted_results.txt"
+TEST_DATA_HEADER = "utterance | features"
+SVM_PREDICTED_DATA_HEADER = "utterance | features | score"
+
+def load_trained_model(path: str) -> tuple[svm.SVC, DictVectorizer, LabelEncoder]:
+    with open(path, 'rb') as f:
+        data = pickle.load(f)
+    return data['model'], data['vectorizer'], data['label_encoder']
+
+def load_test_data(path: str, header: str) -> list[tuple[str, str, dict]]:
+    with open(path, encoding='utf-8') as f:
+        lines = [line.strip() for line in f if line.strip()]
+    assert lines[0] == header
+    data = []
+    for line in lines[1:]:
+        parts = [x.strip() for x in line.split('|')]
+        feats = dict(pair.split('=') for pair in parts[1].split('%') if '=' in pair)
+        data.append((parts[0], parts[1], feats))
+    return data
+
+def get_svm_predictions(
+    model: svm.SVC,
+    vectorizer: DictVectorizer,
+    data: list[tuple[str, str, dict]]
+) -> list[tuple[str, str, float]]:
+    feats_only = [item[2] for item in data]
+    X = vectorizer.transform(feats_only)
+    probs = model.predict_proba(X)
+    max_scores = probs.max(axis=1)
+    return [(item[0], item[1], round(score, 2)) for item, score in zip(data, max_scores)]
+
+def svm_write_predictions_to_file(results: list[tuple[str, str, float]], path: str, header: str):
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(f"{header}\n")
+        for utterance, features, score in results:
+            f.write(f"{utterance} | {features} | {score:.2f}\n")
+    print(f"Predictions written to {path}")
+
+def main():
+    model_path = MODEL_OUTPUT_PATH
+    test_data_path = SVM_TEST_DATA_PATH
+    predicted_output_path = SVM_PREDICTED_RESULTS_PATH
+    test_data_header = TEST_DATA_HEADER
+    predicted_data_header = SVM_PREDICTED_DATA_HEADER
+    model, vectorizer, label_encoder = load_trained_model(model_path)
+    print("Model loaded")
+    data = load_test_data(test_data_path, test_data_header)
+    print(f"Loaded {len(data)} test samples")
+    results = get_svm_predictions(model, vectorizer, data)
+    svm_write_predictions_to_file(results, predicted_output_path, predicted_data_header)
+
+if __name__ == "__main__":
+    main()
