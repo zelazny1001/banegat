@@ -11,11 +11,53 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support, cla
 
 TRAINING_ROOT_DIR = "/tmp/svm/training/"
 TRAINING_DATA_PATH = TRAINING_ROOT_DIR + "features.txt"
+CLEANSED_DATA_PATH = TRAINING_ROOT_DIR + "features_cleansed.txt"
 MODEL_OUTPUT_PATH = TRAINING_ROOT_DIR + "svm.model"
 MODEL_EVAL_REPORT_PATH = TRAINING_ROOT_DIR + "svm_eval_report.txt"
 
 TRAINING_DATA_HEADER = "utterance | features | intent"
 DEFAULT_CV_FOLDS = 5
+
+def cleanse_feature_string(feature_str: str) -> str:
+    feature_str = feature_str.strip()
+    prefixes = ["BOW=", "SHORT_BOW=", "CONCEPT=", "SHORT_CONCEPT="]
+    cleaned = ""
+    i = 0
+    first = True
+    while i < len(feature_str):
+        matched = False
+        for prefix in prefixes:
+            if feature_str.startswith(prefix, i):
+                if not first:
+                    if not cleaned.endswith('%'):
+                        cleaned += "%"
+                cleaned += prefix
+                i += len(prefix)
+                matched = True
+                first = False
+                break
+        if not matched:
+            cleaned += feature_str[i]
+            i += 1
+    return cleaned.strip()
+
+def cleanup_training_data_features(input_filepath: str, output_filepath: str):
+    with open(input_filepath, encoding='utf-8') as fin, open(output_filepath, 'w', encoding='utf-8') as fout:
+        lines = [line.rstrip('\n') for line in fin if line.strip()]
+        fout.write(lines[0].strip() + '\n')
+        for idx, line in enumerate(lines[1:], start=2):
+            parts = [x.strip() for x in line.split('|')]
+            if len(parts) != 3:
+                print(f"Skipping malformed row on line {idx}: {line}")
+                fout.write(line.strip() + '\n')
+                continue
+            utterance = parts[0].strip()
+            features = parts[1].strip()
+            intent = parts[2].strip()
+            cleaned_features = cleanse_feature_string(features)
+            if cleaned_features != features:
+                print(f"Fixed malformed row on line {idx}")
+            fout.write(f"{utterance} | {cleaned_features} | {intent}\n")
 
 def load_training_data(path: str, header: str) -> tuple[list[dict], list[str]]:
     with open(path, encoding='utf-8') as f:
@@ -88,7 +130,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--cv_folds', type=int, default=DEFAULT_CV_FOLDS, help='Number of cross-validation folds')
     return parser.parse_args()
 
-def main():
+def main2():
     args = parse_args()
     training_data_path = TRAINING_DATA_PATH
     training_data_header = TRAINING_DATA_HEADER
@@ -101,86 +143,9 @@ def main():
     report_cross_validation_metrics(y_true, y_pred, label_encoder, model_eval_report_path, cv_folds)
     write_svm_model_to_file(model, vectorizer, encoder, model_output_path)
 
-if __name__ == "__main__":
-    main()
-
-#================================================
-
-# svm_predictor.py
-
-from __future__ import annotations
-import pickle
-from sklearn import svm
-from sklearn.feature_extraction import DictVectorizer
-from sklearn.preprocessing import LabelEncoder
-
-PREDICTOR_ROOT_DIR = "/tmp/svm/predictor/"
-MODEL_ROOT_DIR = "/tmp/svm/training"
-MODEL_PATH = MODEL_ROOT_DIR + "svm.model"
-SVM_TEST_DATA_PATH = PREDICTOR_ROOT_DIR + "test_data.txt"
-SVM_PREDICTED_RESULTS_PATH = PREDICTOR_ROOT_DIR + "svm_predicted_results.txt"
-
-TEST_DATA_HEADER = "utterance | features"
-SVM_PREDICTED_DATA_HEADER = "utterance | features | score"
-
-def load_trained_model(path: str) -> tuple[svm.SVC, DictVectorizer, LabelEncoder]:
-    with open(path, 'rb') as f:
-        data = pickle.load(f)
-    return data['model'], data['vectorizer'], data['label_encoder']
-
-def load_test_data(path: str, header: str) -> list[tuple[str, str, dict]]:
-    with open(path, encoding='utf-8') as f:
-        lines = [line.strip() for line in f if line.strip()]
-    assert lines[0] == header
-    data = []
-    for idx, line in enumerate(lines[1:], start=2):
-        try:
-            parts = [x.strip() for x in line.split('|')]
-            if len(parts) != 2:
-                print(f"Malformed row on line {idx}: {line}")
-                continue
-            feature_str = parts[1]
-            if feature_str.startswith('[') and feature_str.endswith(']'):
-                feature_str = feature_str[1:-1]
-            items = [item.strip().strip("'") for item in feature_str.split(',') if item.strip()]
-            feats = dict(pair.split('=') for pair in items if '=' in pair)
-            data.append((parts[0], parts[1], feats))
-        except Exception as e:
-            print(f"Error processing line {idx}: {line} – {e}")
-    return data
-
-def get_svm_predictions(
-    model: svm.SVC,
-    vectorizer: DictVectorizer,
-    data: list[tuple[str, str, dict]]
-) -> list[tuple[str, str, float]]:
-    feats_only = [item[2] for item in data]
-    X = vectorizer.transform(feats_only)
-    probs = model.predict_proba(X)
-    max_scores = probs.max(axis=1)
-    return [(item[0], item[1], round(score, 2)) for item, score in zip(data, max_scores)]
-
-def svm_write_predictions_to_file(results: list[tuple[str, str, float]], path: str, header: str):
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(f"{header}\n")
-        for utterance, features, score in results:
-            f.write(f"{utterance} | {features} | {score:.2f}\n")
-    print(f"Predictions written to {path}")
-
 def main():
-    model_path = MODEL_PATH
-    test_data_path = SVM_TEST_DATA_PATH
-    predicted_output_path = SVM_PREDICTED_RESULTS_PATH
-    test_data_header = TEST_DATA_HEADER
-    predicted_data_header = SVM_PREDICTED_DATA_HEADER
-    model, vectorizer, label_encoder = load_trained_model(model_path)
-    print("Model loaded")
-    data = load_test_data(test_data_path, test_data_header)
-    print(f"Loaded {len(data)} test samples")
-    results = get_svm_predictions(model, vectorizer, data)
-    svm_write_predictions_to_file(results, predicted_output_path, predicted_data_header)
+    print(f"about to read and cleanse features file...")
+    cleanup_training_data_features(TRAINING_DATA_PATH, CLEANSED_DATA_PATH)
 
 if __name__ == "__main__":
     main()
-
-
