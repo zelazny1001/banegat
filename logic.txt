@@ -3,6 +3,7 @@
 from __future__ import annotations
 import pickle
 import argparse
+from collections import Counter
 from sklearn import svm
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.model_selection import cross_val_predict
@@ -42,6 +43,7 @@ def cleanse_feature_string(feature_str: str) -> str:
     return cleaned.strip()
 
 def cleanup_training_data_features(input_filepath: str, output_filepath: str):
+    cleanse_count = 0
     with open(input_filepath, encoding='utf-8') as fin, open(output_filepath, 'w', encoding='utf-8') as fout:
         lines = [line.rstrip('\n') for line in fin if line.strip()]
         fout.write(lines[0].strip() + '\n')
@@ -56,8 +58,10 @@ def cleanup_training_data_features(input_filepath: str, output_filepath: str):
             intent = parts[2].strip()
             cleaned_features = cleanse_feature_string(features)
             if cleaned_features != features:
-                print(f"Fixed malformed row on line {idx}")
+                cleanse_count += 1
+                print(f"Line {idx}: changed'{features}' to '{cleaned_features}'")
             fout.write(f"{utterance} | {cleaned_features} | {intent}\n")
+        print(f"Number of Lines Cleansed: {cleanse_count}")
 
 def load_training_data(path: str, header: str) -> tuple[list[dict], list[str]]:
     with open(path, encoding='utf-8') as f:
@@ -77,6 +81,12 @@ def load_training_data(path: str, header: str) -> tuple[list[dict], list[str]]:
         except Exception as e:
             print(f"Error processing line {idx}: {line} – {e}")
     return features, labels
+
+def summarize_intents(labels: list[str]):
+    intent_counts = Counter(label.strip() for label in labels if label.strip())
+    print("Intent distribution:")
+    for intent, count in sorted(intent_counts.items()):
+        print(f"{intent}: {count}")
 
 def train_svm_model_with_cv(
     features: list[dict],
@@ -130,22 +140,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--cv_folds', type=int, default=DEFAULT_CV_FOLDS, help='Number of cross-validation folds')
     return parser.parse_args()
 
-def main2():
+def main():
     args = parse_args()
     training_data_path = TRAINING_DATA_PATH
     training_data_header = TRAINING_DATA_HEADER
+    cleansed_data_path = CLEANSED_DATA_PATH
     model_output_path = MODEL_OUTPUT_PATH
     model_eval_report_path = MODEL_EVAL_REPORT_PATH
     cv_folds = args.cv_folds
+    
+    print(f"about to read and cleanse features file...")
     features, labels = load_training_data(training_data_path, training_data_header)
+    features, labels = load_training_data(cleansed_data_path, training_data_header)
+    summarize_intents(labels)
+    
     print(f"Loaded {len(features)} training samples")
     model, vectorizer, encoder, y_true, y_pred, label_encoder = train_svm_model_with_cv(features, labels, cv_folds)
     report_cross_validation_metrics(y_true, y_pred, label_encoder, model_eval_report_path, cv_folds)
     write_svm_model_to_file(model, vectorizer, encoder, model_output_path)
 
-def main():
+def main2():
     print(f"about to read and cleanse features file...")
     cleanup_training_data_features(TRAINING_DATA_PATH, CLEANSED_DATA_PATH)
+    features, labels = load_training_data(CLEANSED_DATA_PATH, TRAINING_DATA_HEADER)
+    summarize_intents(labels)
 
 if __name__ == "__main__":
     main()
