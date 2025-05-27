@@ -2,25 +2,24 @@
 
 from __future__ import annotations
 import pickle
-from sklearn import svm
-from sklearn.feature_extraction import DictVectorizer
-from sklearn.preprocessing import LabelEncoder
+import os
 
 PREDICTOR_ROOT_DIR = "/tmp/svm/predictor/"
 MODEL_ROOT_DIR = "/tmp/svm/training"
 MODEL_PATH = MODEL_ROOT_DIR + "svm.model"
 SVM_TEST_DATA_PATH = PREDICTOR_ROOT_DIR + "test_data.txt"
+CLEANSED_TEST_DATA_PATH = PREDICTOR_ROOT_DIR + "test_data_cleansed.txt"
 SVM_PREDICTED_RESULTS_PATH = PREDICTOR_ROOT_DIR + "svm_predicted_results.txt"
 
 TEST_DATA_HEADER = "utterance | features"
 SVM_PREDICTED_DATA_HEADER = "utterance | intent"
 
-def load_trained_model(path: str) -> tuple[svm.SVC, DictVectorizer, LabelEncoder]:
+def load_trained_model(path: str) -> tuple:
     with open(path, 'rb') as f:
         data = pickle.load(f)
     return data['model'], data['vectorizer'], data['label_encoder']
 
-def load_test_data(path: str, header: str) -> list[tuple[str, str, dict]]:
+def load_test_data(path: str, header: str) -> list[tuple[str, dict]]:
     with open(path, encoding='utf-8') as f:
         lines = [line.strip() for line in f if line.strip()]
     assert lines[0] == header
@@ -55,21 +54,55 @@ def svm_write_predictions_to_file(results: list[tuple[str, str]], path: str, hea
             f.write(f"{utterance} | {intent}\n")
     print(f"Predictions written to {path}")
 
-def main():
-    model_path = MODEL_PATH
-    test_data_path = SVM_TEST_DATA_PATH
-    predicted_output_path = SVM_PREDICTED_RESULTS_PATH
-    test_data_header = TEST_DATA_HEADER
-    predicted_data_header = SVM_PREDICTED_DATA_HEADER
+def cleanup_test_data_features(input_filepath: str, output_filepath: str):
+    prefixes = ["BOW=", "SHORT_BOW=", "CONCEPT=", "SHORT_CONCEPT="]
+    with open(input_filepath, encoding="utf-8") as fin, open(output_filepath, "w", encoding="utf-8") as fout:
+        lines = [line.rstrip('\n') for line in fin if line.strip()]
+        fout.write(lines[0] + '\n')  # write header
+        for idx, line in enumerate(lines[1:], start=2):
+            parts = [x.strip() for x in line.split('|')]
+            if len(parts) != 2:
+                print(f"Skipping malformed row on line {idx}: {line}")
+                fout.write(line + '\n')
+                continue
+            utterance, feature_str = parts
+            if feature_str.startswith('[') and feature_str.endswith(']'):
+                feature_str = feature_str[1:-1]
+            tokens = [t.strip().strip("'") for t in feature_str.split(',')]
+            cleaned = []
+            for token in tokens:
+                i = 0
+                while i < len(token):
+                    matched = False
+                    for prefix in prefixes:
+                        if token.startswith(prefix, i):
+                            j = i + len(prefix)
+                            while j < len(token) and all(not token.startswith(p, j) for p in prefixes):
+                                j += 1
+                            cleaned.append(token[i:j])
+                            i = j
+                            matched = True
+                            break
+                    if not matched:
+                        cleaned.append(token[i:])
+                        break
+            cleaned_str = "[ " + ', '.join(f"'{f.strip()}'" for f in cleaned if f.strip()) + " ]"
+            fout.write(f"{utterance} | {cleaned_str}\n")
+    print(f"Cleansed test data written to {output_filepath}")
 
-    model, vectorizer, label_encoder = load_trained_model(model_path)
+def main():
+    if not os.path.exists(CLEANSED_TEST_DATA_PATH):
+        print("Cleansed test file not found – cleansing raw test data...")
+        cleanup_test_data_features(SVM_TEST_DATA_PATH, CLEANSED_TEST_DATA_PATH)
+
+    model, vectorizer, label_encoder = load_trained_model(MODEL_PATH)
     print("Model loaded")
 
-    data = load_test_data(test_data_path, test_data_header)
+    data = load_test_data(CLEANSED_TEST_DATA_PATH, TEST_DATA_HEADER)
     print(f"Loaded {len(data)} test samples")
 
     results = get_svm_predictions(model, vectorizer, label_encoder, data)
-    svm_write_predictions_to_file(results, predicted_output_path, predicted_data_header)
+    svm_write_predictions_to_file(results, SVM_PREDICTED_RESULTS_PATH, SVM_PREDICTED_DATA_HEADER)
 
 if __name__ == "__main__":
     main()
