@@ -1,113 +1,195 @@
-# svm_predictor.py
+# svm_trainer.py
 
 from __future__ import annotations
 import pickle
+import argparse
 import os
+from datetime import datetime
+from collections import Counter
+from tqdm import tqdm
+import csv
+import numpy as np
+from sklearn import svm
+from sklearn.base import clone
+from sklearn.svm import LinearSVC
 from sklearn.feature_extraction import DictVectorizer
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 
-PREDICTOR_ROOT_DIR = "/tmp/svm/predictor/"
-MODEL_ROOT_DIR = "/tmp/svm/training"
-MODEL_PATH = MODEL_ROOT_DIR + "svm.model"
-SVM_TEST_DATA_PATH = PREDICTOR_ROOT_DIR + "test_data.txt"
-CLEANSED_TEST_DATA_PATH = PREDICTOR_ROOT_DIR + "test_data_cleansed.txt"
-SVM_PREDICTED_RESULTS_PATH = PREDICTOR_ROOT_DIR + "svm_predicted_results.txt"
+TRAINING_ROOT_DIR = "/tmp/svm/training/"
+TRAINING_DATA_PATH = TRAINING_ROOT_DIR + "features.txt"
+CLEANSED_DATA_PATH = TRAINING_ROOT_DIR + "features_cleansed.txt"
+MODEL_OUTPUT_PATH = TRAINING_ROOT_DIR + "svm.model"
+MODEL_EVAL_REPORT_PATH = TRAINING_ROOT_DIR + "svm_eval_report.txt"
+FEATURE_DEBUG_CSV = TRAINING_ROOT_DIR + "features_debug.csv"
+DEBUG_FEATURE_CSV = True
+TRAINING_DATA_HEADER = "utterance | features | intent"
+DEFAULT_CV_FOLDS = 5
+ONLY_TRAIN_WITH_INTENTS_THAT_HAVE_AT_LEAST_CV_FOLDS = True
 
-TEST_DATA_HEADER = "utterance|features"
-SVM_PREDICTED_DATA_HEADER = "utterance|intent"
+def log_step(message: str):
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
 
-def load_trained_model(path: str) -> tuple:
-    with open(path, 'rb') as f:
-        data = pickle.load(f)
-    return data['model'], data['vectorizer'], data['label_encoder']
-
-def normalize_header(header_line: str) -> str:
-    return header_line.replace(" ", "")
-
-def load_test_data(path: str, expected_header: str) -> list[tuple[str, dict]]:
+def load_training_data(path: str, header: str) -> tuple[list[dict], list[str], list[str]]:
     with open(path, encoding='utf-8') as f:
         lines = [line.strip() for line in f if line.strip()]
-    assert normalize_header(lines[0]) == normalize_header(expected_header)
-    data = []
+    assert lines[0] == header
+    features, labels, utterances = [], [], []
     for idx, line in enumerate(lines[1:], start=2):
         try:
             parts = [x.strip() for x in line.split('|')]
-            if len(parts) != 2:
+            if len(parts) != 3:
                 print(f"Malformed row on line {idx}: {line}")
                 continue
-            utterance, feature_str = parts[0].strip(), parts[1].strip()
-            if feature_str.startswith('[') and feature_str.endswith(']'):
-                feature_str = feature_str[1:-1]
-            items = [item.strip().strip("'") for item in feature_str.split(',') if item.strip()]
-            feats = dict(pair.split('=') for pair in items if '=' in pair)
-            data.append((utterance, feats))
+            feats = {pair.strip(): 1 for pair in parts[1].split('%') if '=' in pair}
+            features.append(feats)
+            labels.append(parts[2])
+            utterances.append(parts[0])
         except Exception as e:
             print(f"Error processing line {idx}: {line} – {e}")
-    return data
+    return features, labels, utterances
 
-def get_svm_predictions(model, vectorizer, label_encoder, data: list[tuple[str, dict]]) -> list[tuple[str, str]]:
-    feats_only = [feats for _, feats in data]
-    X = vectorizer.transform(feats_only)
-    y_pred = model.predict(X)
-    predicted_labels = label_encoder.inverse_transform(y_pred)
-    return [(utterance.strip(), label.strip()) for (utterance, _), label in zip(data, predicted_labels)]
+def write_feature_debug_csv(features, labels, utterances, vectorizer, path, top_n=15):
+    if not DEBUG_FEATURE_CSV:
+        return
+    log_step("Writing feature debug CSV...")
+    X = vectorizer.transform(features)
+    feature_names = vectorizer.get_feature_names_out()
 
-def svm_write_predictions_to_file(results: list[tuple[str, str]], path: str, header: str):
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(f"{header}\n")
-        for utterance, intent in results:
-            f.write(f"{utterance.strip()}|{intent.strip()}\n")
-    print(f"Predictions written to {path}")
+    totals = np.sum(X, axis=0).A1
+    top_indices = np.argsort(totals)[-top_n:][::-1]
+    selected = [feature_names[i] for i in top_indices]
 
-def cleanup_test_data_features(input_filepath: str, output_filepath: str):
-    prefixes = ["BOW=", "SHORT_BOW=", "CONCEPT=", "SHORT_CONCEPT="]
-    with open(input_filepath, encoding="utf-8") as fin, open(output_filepath, "w", encoding="utf-8") as fout:
-        lines = [line.rstrip('\n') for line in fin if line.strip()]
-        fout.write(lines[0].strip() + '\n')  # write normalized header
-        for idx, line in enumerate(lines[1:], start=2):
-            parts = [x.strip() for x in line.split('|')]
-            if len(parts) != 2:
-                print(f"Skipping malformed row on line {idx}: {line}")
-                fout.write(line + '\n')
-                continue
-            utterance, feature_str = parts
-            if feature_str.startswith('[') and feature_str.endswith(']'):
-                feature_str = feature_str[1:-1]
-            tokens = [t.strip().strip("'") for t in feature_str.split(',')]
-            cleaned = []
-            for token in tokens:
-                i = 0
-                while i < len(token):
-                    matched = False
-                    for prefix in prefixes:
-                        if token.startswith(prefix, i):
-                            j = i + len(prefix)
-                            while j < len(token) and all(not token.startswith(p, j) for p in prefixes):
-                                j += 1
-                            cleaned.append(token[i:j])
-                            i = j
-                            matched = True
-                            break
-                    if not matched:
-                        cleaned.append(token[i:])
-                        break
-            cleaned_str = "[ " + ', '.join(f"'{f.strip()}'" for f in cleaned if f.strip()) + " ]"
-            fout.write(f"{utterance}|{cleaned_str}\n")
-    print(f"Cleansed test data written to {output_filepath}")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(["utterance", "intent"] + selected)
+        for utt, label, row in zip(utterances, labels, X):
+            vec = row.toarray().flatten()
+            values = [int(vec[feature_names.tolist().index(f)]) if f in feature_names else 0 for f in selected]
+            writer.writerow([utt, label] + values)
+    print(f"Feature debug file written: {path}")
+
+def summarize_intents(max_count: int, labels: list[str]):
+    intent_counts = Counter(label.strip() for label in labels if label.strip())
+    print(f"Intent distribution (≤ {max_count} utterances):")
+    for intent, count in sorted(intent_counts.items()):
+        if count <= max_count:
+            print(f"{intent}: {count}")
+
+def cross_val_predict_with_progress(model, X, y, cv_folds):
+    skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+    y_pred = np.empty_like(y)
+    for train_idx, test_idx in tqdm(skf.split(X, y), total=cv_folds, desc="Cross-validation"):
+        model_clone = clone(model)
+        model_clone.fit(X[train_idx], y[train_idx])
+        y_pred[test_idx] = model_clone.predict(X[test_idx])
+    return y_pred
+
+def train_svm_model_with_cv(
+    features: list[dict],
+    labels: list[str],
+    cv_folds: int
+) -> tuple[LinearSVC, DictVectorizer, LabelEncoder, list[int], list[int], LabelEncoder]:
+    log_step("Starting SVM model training and cross-validation...")
+
+    if ONLY_TRAIN_WITH_INTENTS_THAT_HAVE_AT_LEAST_CV_FOLDS:
+        log_step(f"Filtering intents with fewer than {cv_folds} samples...")
+        label_counts = Counter(labels)
+        retained_indices = [i for i, label in enumerate(labels) if label_counts[label] >= cv_folds]
+        if not retained_indices:
+            raise ValueError("No labels with enough samples for the given number of CV folds.")
+        features = [features[i] for i in retained_indices]
+        labels = [labels[i] for i in retained_indices]
+        log_step(f"Retained {len(features)} samples after filtering")
+
+    vectorizer = DictVectorizer(sparse=True)
+    log_step("Vectorizing feature data...")
+    X = vectorizer.fit_transform(features)
+
+    label_encoder = LabelEncoder()
+    log_step("Encoding intent labels...")
+    y = label_encoder.fit_transform(labels)
+
+    log_step(f"Running {cv_folds}-fold cross-validation...")
+    model = LinearSVC(dual=False, max_iter=5000)
+    y_pred = cross_val_predict_with_progress(model, X, y, cv_folds)
+
+    log_step("Fitting final model to all data...")
+    model.fit(X, y)
+
+    log_step("Training and validation complete.")
+    return model, vectorizer, label_encoder, y, y_pred, label_encoder
+
+def report_cross_validation_metrics(
+    y_true: list[int],
+    y_pred: list[int],
+    label_encoder: LabelEncoder,
+    report_path: str,
+    cv_folds: int
+):
+    acc = accuracy_score(y_true, y_pred)
+    precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average='weighted')
+    report = classification_report(y_true, y_pred, target_names=label_encoder.classes_)
+    print(f"CV Accuracy: {acc:.4f}")
+    print(f"CV Precision: {precision:.4f}")
+    print(f"CV Recall: {recall:.4f}")
+    print(f"CV F1 Score: {f1:.4f}")
+
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(f"Cross-Validation Report (Folds={cv_folds})\n")
+        f.write(f"Accuracy: {acc:.4f}\n")
+        f.write(f"Precision: {precision:.4f}\n")
+        f.write(f"Recall: {recall:.4f}\n")
+        f.write(f"F1 Score: {f1:.4f}\n\n")
+        f.write(report)
+    print(f"Evaluation report saved to {report_path}")
+
+def write_svm_model_to_file(
+    model: svm.SVC,
+    vectorizer: DictVectorizer,
+    encoder: LabelEncoder,
+    path: str
+):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'wb') as f:
+        pickle.dump({'model': model, 'vectorizer': vectorizer, 'label_encoder': encoder}, f)
+    print(f"Model saved to {path}")
+
+def cleanup_training_data_features(input_path: str, output_path: str):
+    with open(input_path, 'r', encoding='utf-8') as f:
+        lines = [line.strip() for line in f if line.strip()]
+    header = lines[0]
+    rows = [line for line in lines[1:] if line.count('|') == 2 and '=' in line]
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(header + '\n')
+        for row in rows:
+            f.write(row + '\n')
+    print(f"Cleansed training data written to {output_path}")
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cv_folds', type=int, default=DEFAULT_CV_FOLDS, help='Number of cross-validation folds')
+    return parser.parse_args()
 
 def main():
-    if not os.path.exists(CLEANSED_TEST_DATA_PATH):
-        print("Cleansed test file not found – cleansing raw test data...")
-        cleanup_test_data_features(SVM_TEST_DATA_PATH, CLEANSED_TEST_DATA_PATH)
+    args = parse_args()
+    if not os.path.exists(CLEANSED_DATA_PATH):
+        print("Cleansed training file not found – cleansing raw features...")
+        cleanup_training_data_features(TRAINING_DATA_PATH, CLEANSED_DATA_PATH)
 
-    model, vectorizer, label_encoder = load_trained_model(MODEL_PATH)
-    print("Model loaded")
+    print("Loading cleansed training data...")
+    features, labels, utterances = load_training_data(CLEANSED_DATA_PATH, TRAINING_DATA_HEADER)
+    summarize_intents(5, labels)
+    print(f"Loaded {len(features)} training samples")
 
-    data = load_test_data(CLEANSED_TEST_DATA_PATH, TEST_DATA_HEADER)
-    print(f"Loaded {len(data)} test samples")
-
-    results = get_svm_predictions(model, vectorizer, label_encoder, data)
-    svm_write_predictions_to_file(results, SVM_PREDICTED_RESULTS_PATH, SVM_PREDICTED_DATA_HEADER)
+    model, vectorizer, encoder, y_true, y_pred, label_encoder = train_svm_model_with_cv(features, labels, args.cv_folds)
+    report_cross_validation_metrics(y_true, y_pred, label_encoder, MODEL_EVAL_REPORT_PATH, args.cv_folds)
+    write_svm_model_to_file(model, vectorizer, encoder, MODEL_OUTPUT_PATH)
+    write_feature_debug_csv(features, labels, utterances, vectorizer, FEATURE_DEBUG_CSV)
 
 if __name__ == "__main__":
     main()
