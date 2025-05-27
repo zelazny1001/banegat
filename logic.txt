@@ -3,6 +3,8 @@
 from __future__ import annotations
 import pickle
 import os
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.preprocessing import LabelEncoder
 
 PREDICTOR_ROOT_DIR = "/tmp/svm/predictor/"
 MODEL_ROOT_DIR = "/tmp/svm/training"
@@ -11,18 +13,21 @@ SVM_TEST_DATA_PATH = PREDICTOR_ROOT_DIR + "test_data.txt"
 CLEANSED_TEST_DATA_PATH = PREDICTOR_ROOT_DIR + "test_data_cleansed.txt"
 SVM_PREDICTED_RESULTS_PATH = PREDICTOR_ROOT_DIR + "svm_predicted_results.txt"
 
-TEST_DATA_HEADER = "utterance | features"
-SVM_PREDICTED_DATA_HEADER = "utterance | intent"
+TEST_DATA_HEADER = "utterance|features"
+SVM_PREDICTED_DATA_HEADER = "utterance|intent"
 
 def load_trained_model(path: str) -> tuple:
     with open(path, 'rb') as f:
         data = pickle.load(f)
     return data['model'], data['vectorizer'], data['label_encoder']
 
-def load_test_data(path: str, header: str) -> list[tuple[str, dict]]:
+def normalize_header(header_line: str) -> str:
+    return header_line.replace(" ", "")
+
+def load_test_data(path: str, expected_header: str) -> list[tuple[str, dict]]:
     with open(path, encoding='utf-8') as f:
         lines = [line.strip() for line in f if line.strip()]
-    assert lines[0] == header
+    assert normalize_header(lines[0]) == normalize_header(expected_header)
     data = []
     for idx, line in enumerate(lines[1:], start=2):
         try:
@@ -30,12 +35,12 @@ def load_test_data(path: str, header: str) -> list[tuple[str, dict]]:
             if len(parts) != 2:
                 print(f"Malformed row on line {idx}: {line}")
                 continue
-            feature_str = parts[1]
+            utterance, feature_str = parts[0].strip(), parts[1].strip()
             if feature_str.startswith('[') and feature_str.endswith(']'):
                 feature_str = feature_str[1:-1]
             items = [item.strip().strip("'") for item in feature_str.split(',') if item.strip()]
             feats = dict(pair.split('=') for pair in items if '=' in pair)
-            data.append((parts[0], feats))
+            data.append((utterance, feats))
         except Exception as e:
             print(f"Error processing line {idx}: {line} – {e}")
     return data
@@ -45,20 +50,20 @@ def get_svm_predictions(model, vectorizer, label_encoder, data: list[tuple[str, 
     X = vectorizer.transform(feats_only)
     y_pred = model.predict(X)
     predicted_labels = label_encoder.inverse_transform(y_pred)
-    return [(utterance, label) for (utterance, _), label in zip(data, predicted_labels)]
+    return [(utterance.strip(), label.strip()) for (utterance, _), label in zip(data, predicted_labels)]
 
 def svm_write_predictions_to_file(results: list[tuple[str, str]], path: str, header: str):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(f"{header}\n")
         for utterance, intent in results:
-            f.write(f"{utterance} | {intent}\n")
+            f.write(f"{utterance.strip()}|{intent.strip()}\n")
     print(f"Predictions written to {path}")
 
 def cleanup_test_data_features(input_filepath: str, output_filepath: str):
     prefixes = ["BOW=", "SHORT_BOW=", "CONCEPT=", "SHORT_CONCEPT="]
     with open(input_filepath, encoding="utf-8") as fin, open(output_filepath, "w", encoding="utf-8") as fout:
         lines = [line.rstrip('\n') for line in fin if line.strip()]
-        fout.write(lines[0] + '\n')  # write header
+        fout.write(lines[0].strip() + '\n')  # write normalized header
         for idx, line in enumerate(lines[1:], start=2):
             parts = [x.strip() for x in line.split('|')]
             if len(parts) != 2:
@@ -87,7 +92,7 @@ def cleanup_test_data_features(input_filepath: str, output_filepath: str):
                         cleaned.append(token[i:])
                         break
             cleaned_str = "[ " + ', '.join(f"'{f.strip()}'" for f in cleaned if f.strip()) + " ]"
-            fout.write(f"{utterance} | {cleaned_str}\n")
+            fout.write(f"{utterance}|{cleaned_str}\n")
     print(f"Cleansed test data written to {output_filepath}")
 
 def main():
