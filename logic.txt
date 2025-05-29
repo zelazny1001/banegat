@@ -76,18 +76,15 @@ def create_pivot(results_df, filepath):
     pivot_df = results_df.set_index("Model").transpose()
     pivot_df = pivot_df[~pivot_df.index.isin({"TP", "FP", "FN", "TN"})]
     pivot_df = pivot_df.astype(float).round(4)
-
     with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
         pivot_df.to_excel(writer, sheet_name=PIVOT_WORKSHEET)
         ws = writer.book[PIVOT_WORKSHEET]
         aptos = Font(name="Aptos", size=9)
         bold = Font(name="Aptos", size=9, bold=True)
-
         ws["A1"].value = None
         ws.column_dimensions["A"].width = 13
         for col in range(2, ws.max_column + 1):
             ws.column_dimensions[get_column_letter(col)].width = 18
-
         for row_idx, row in enumerate(ws.iter_rows()):
             for col_idx, cell in enumerate(row):
                 if col_idx > 0:
@@ -98,30 +95,23 @@ def create_pivot(results_df, filepath):
 def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
     truth_df = pd.read_excel(excel_spreadsheet_filepath, sheet_name=GROUND_TRUTH_WORKSHEET, engine="openpyxl")
     truth_series = get_intent_column(truth_df)
-
     results_list = []
-
     for model in MODELS:
         model_df = pd.read_excel(excel_spreadsheet_filepath, sheet_name=model, engine="openpyxl")
         model_series = get_intent_column(model_df)
-
-        # basic sanity check that the number of rows matches between ground truth and predictions.
         if len(model_series) != len(truth_series):
             raise ValueError(f"Row count mismatch between {GROUND_TRUTH_WORKSHEET} and {model}.")
-
-        # get counts based on the intent of interest.
         TP = ((truth_series == intent_of_interest) & (model_series == intent_of_interest)).sum()
         FP = ((truth_series != intent_of_interest) & (model_series == intent_of_interest)).sum()
         FN = ((truth_series == intent_of_interest) & (model_series != intent_of_interest)).sum()
         TN = ((truth_series != intent_of_interest) & (model_series != intent_of_interest)).sum()
-
         accuracy = (TP + TN) / (TP + FP + FN + TN) if (TP + FP + FN + TN) > 0 else 0
         precision = TP / (TP + FP) if (TP + FP) > 0 else 0
         recall = TP / (TP + FN) if (TP + FN) > 0 else 0
-
+        f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        f05 = (1.25 * precision * recall) / (0.25 * precision + recall) if (precision + recall) > 0 else 0
         confusion = compute_confusion_by_class(truth_series, model_series)
         micro, macro = compute_micro_macro_metrics(confusion)
-
         results_list.append({
             "Model": model,
             "TP": TP,
@@ -131,11 +121,13 @@ def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
             "Accuracy": accuracy,
             "Precision": precision,
             "Recall": recall,
+            "F1": f1,
+            "F0.5": f05,
             "Micro Precision": micro[0],
             "Micro Recall": micro[1],
             "Micro F1": micro[2],
             "Micro F0.5": micro[3],
-            "Micro Acc.": micro[4],
+            "Micro Accuracy": micro[4],
             "Macro Precision": macro[0],
             "Macro Recall": macro[1],
             "Macro F1": macro[2],
@@ -143,23 +135,20 @@ def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
             "Macro Accuracy": macro[4]
         })
     results_df = pd.DataFrame(results_list)
-
     col_widths = {
         "TP": 7, "FP": 7, "FN": 7, "TN": 7,
-        "Accuracy": 10, "Precision": 10, "Recall": 10
+        "Accuracy": 10, "Precision": 10, "Recall": 10, "F1": 10, "F0.5": 10
     }
     for col in results_df.columns:
         if col.startswith("Micro") or col.startswith("Macro"):
             col_widths[col] = 14
         elif col not in col_widths:
             col_widths[col] = 20
-
     with pd.ExcelWriter(excel_spreadsheet_filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
         results_df.to_excel(writer, sheet_name=RESULT_WORKSHEET, index=False)
         ws = writer.book[RESULT_WORKSHEET]
         for i, col in enumerate(results_df.columns, 1):
             ws.column_dimensions[get_column_letter(i)].width = col_widths.get(col, 20)
-
         for row_idx, row in enumerate(ws.iter_rows()):
             for col_idx, cell in enumerate(row):
                 col_name = results_df.columns[col_idx]
@@ -167,7 +156,6 @@ def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
                     cell.number_format = '0.00%'
                 cell.font = Font(name="Aptos", size=9)
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-
     create_pivot(results_df, excel_spreadsheet_filepath)
     return excel_spreadsheet_filepath
 
