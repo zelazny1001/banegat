@@ -213,21 +213,28 @@ def write_details_worksheet(filepath):
         df.to_excel(writer, sheet_name=DETAILS_WORKSHEET, index=False)
         ws = writer.book[DETAILS_WORKSHEET]
 
-        # Set column widths
         for i, col in enumerate(df.columns, 1):
             col_letter = get_column_letter(i)
-            if col_letter in ['C', 'D', 'E', 'F', 'G', 'H', 'I']:
+            if col_letter == 'A':
+                ws.column_dimensions[col_letter].width = 18
+            elif col_letter == 'B':
+                ws.column_dimensions[col_letter].width = 22
+            elif col_letter in ['C', 'D', 'E', 'F', 'G', 'H', 'I']:
                 ws.column_dimensions[col_letter].width = 10
             else:
                 ws.column_dimensions[col_letter].width = 14
 
-        for row in ws.iter_rows():
+        for row_idx, row in enumerate(ws.iter_rows()):
             for col_idx, cell in enumerate(row):
                 col_letter = get_column_letter(col_idx + 1)
                 if isinstance(cell.value, float):
                     cell.number_format = '0.00%'
                 cell.font = Font(name="Aptos", size=9)
-                if col_letter == 'B':
+                if row_idx == 0:
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                elif col_letter == 'A':
+                    cell.alignment = Alignment(horizontal="left", vertical="center")
+                elif col_letter == 'B':
                     cell.alignment = Alignment(horizontal="right", vertical="center")
                 else:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
