@@ -75,28 +75,27 @@ def compute_micro_macro_metrics(confusion_dict):
 def create_pivot(results_df, filepath):
     pivot_df = results_df.set_index("Model").transpose()
     pivot_df = pivot_df[~pivot_df.index.isin({"TP", "FP", "FN", "TN"})]
-    pivot_df = pivot_df.astype(float).round(2)
+    pivot_df = pivot_df.astype(float).round(4)
 
     with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-        pivot_df.to_excel(writer, sheet_name=PIVOT_WORKSHEET, float_format="%.2f%%")
+        pivot_df.to_excel(writer, sheet_name=PIVOT_WORKSHEET)
         ws = writer.book[PIVOT_WORKSHEET]
-        aptos_font = Font(name="Aptos", size=9)
-        bold_font = Font(name="Aptos", size=9, bold=True)
+        aptos = Font(name="Aptos", size=9)
+        bold = Font(name="Aptos", size=9, bold=True)
 
         ws["A1"].value = None
         ws.column_dimensions["A"].width = 13
         for col in range(2, ws.max_column + 1):
-            col_letter = get_column_letter(col)
-            ws.column_dimensions[col_letter].width = 18
+            ws.column_dimensions[get_column_letter(col)].width = 18
 
         for row_idx, row in enumerate(ws.iter_rows()):
             for col_idx, cell in enumerate(row):
-                cell.font = aptos_font if col_idx == 0 else bold_font if row_idx == 0 else aptos_font
+                if col_idx > 0:
+                    cell.number_format = '0.00%'
+                cell.font = aptos if col_idx == 0 else bold if row_idx == 0 else aptos
                 cell.alignment = Alignment(horizontal="right" if col_idx == 0 else "center", vertical="center")
 
 def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
-
-    # get ground truth data and extract the Intent column.
     truth_df = pd.read_excel(excel_spreadsheet_filepath, sheet_name=GROUND_TRUTH_WORKSHEET, engine="openpyxl")
     truth_series = get_intent_column(truth_df)
 
@@ -129,19 +128,19 @@ def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
             "FP": FP,
             "FN": FN,
             "TN": TN,
-            "Accuracy": f"{accuracy * 100:.2f}%",
-            "Precision": f"{precision * 100:.2f}%",
-            "Recall": f"{recall * 100:.2f}%",
-            "Micro Precision": f"{micro[0] * 100:.2f}%",
-            "Micro Recall": f"{micro[1] * 100:.2f}%",
-            "Micro F1": f"{micro[2] * 100:.2f}%",
-            "Micro F0.5": f"{micro[3] * 100:.2f}%",
-            "Micro Acc.": f"{micro[4] * 100:.2f}%",
-            "Macro Precision": f"{macro[0] * 100:.2f}%",
-            "Macro Recall": f"{macro[1] * 100:.2f}%",
-            "Macro F1": f"{macro[2] * 100:.2f}%",
-            "Macro F0.5": f"{macro[3] * 100:.2f}%",
-            "Macro Accuracy": f"{macro[4] * 100:.2f}%"
+            "Accuracy": accuracy,
+            "Precision": precision,
+            "Recall": recall,
+            "Micro Precision": micro[0],
+            "Micro Recall": micro[1],
+            "Micro F1": micro[2],
+            "Micro F0.5": micro[3],
+            "Micro Acc.": micro[4],
+            "Macro Precision": macro[0],
+            "Macro Recall": macro[1],
+            "Macro F1": macro[2],
+            "Macro F0.5": macro[3],
+            "Macro Accuracy": macro[4]
         })
     results_df = pd.DataFrame(results_list)
 
@@ -159,10 +158,13 @@ def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
         results_df.to_excel(writer, sheet_name=RESULT_WORKSHEET, index=False)
         ws = writer.book[RESULT_WORKSHEET]
         for i, col in enumerate(results_df.columns, 1):
-            letter = get_column_letter(i)
-            ws.column_dimensions[letter].width = col_widths.get(col, 20)
-        for row in ws.iter_rows():
-            for cell in row:
+            ws.column_dimensions[get_column_letter(i)].width = col_widths.get(col, 20)
+
+        for row_idx, row in enumerate(ws.iter_rows()):
+            for col_idx, cell in enumerate(row):
+                col_name = results_df.columns[col_idx]
+                if row_idx > 0 and col_name not in {"TP", "FP", "FN", "TN", "Model"}:
+                    cell.number_format = '0.00%'
                 cell.font = Font(name="Aptos", size=9)
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
