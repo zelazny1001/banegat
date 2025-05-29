@@ -1,4 +1,4 @@
-# confusion_matrix.py
+# create_confusion_matrix.py
 
 import pandas as pd
 from collections import defaultdict
@@ -74,27 +74,26 @@ def compute_micro_macro_metrics(confusion_dict):
 
 def create_pivot(results_df, filepath):
     pivot_df = results_df.set_index("Model").transpose()
-    pivot_df.index.name = "Metric"
-
-    count_rows = {"TP", "FP", "FN", "TN"}
-    pivot_df = pivot_df[~pivot_df.index.isin(count_rows)]
-
+    pivot_df = pivot_df[~pivot_df.index.isin({"TP", "FP", "FN", "TN"})]
     for metric in pivot_df.index:
-        pivot_df.loc[metric] = pivot_df.loc[metric].astype(float).round(2)
+        pivot_df.loc[metric] = pivot_df.loc[metric].astype(float).apply(lambda x: f"{x * 100:.2f}%")
 
     with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
         pivot_df.to_excel(writer, sheet_name=PIVOT_WORKSHEET)
-        worksheet = writer.book[PIVOT_WORKSHEET]
-        bold_font = Font(bold=True)
-        for col in range(1, worksheet.max_column + 1):
+        ws = writer.book[PIVOT_WORKSHEET]
+        aptos_font = Font(name="Aptos", size=9)
+        bold_font = Font(name="Aptos", size=9, bold=True)
+
+        ws["A1"].value = None
+        ws.column_dimensions["A"].width = 13
+        for col in range(2, ws.max_column + 1):
             col_letter = get_column_letter(col)
-            worksheet.column_dimensions[col_letter].width = 20
-        for row_index, row in enumerate(worksheet.iter_rows()):
-            for col_index, cell in enumerate(row):
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-                if row_index == 0 or col_index == 0:
-                    cell.font = bold_font
-                    
+            ws.column_dimensions[col_letter].width = 18
+
+        for row_idx, row in enumerate(ws.iter_rows()):
+            for col_idx, cell in enumerate(row):
+                cell.font = aptos_font if col_idx == 0 else bold_font if row_idx == 0 else aptos_font
+                cell.alignment = Alignment(horizontal="right" if col_idx == 0 else "center", vertical="center")
 
 def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
 
@@ -131,32 +130,41 @@ def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
             "FP": FP,
             "FN": FN,
             "TN": TN,
-            "Accuracy": round(accuracy, 2),
-            "Precision": round(precision, 2),
-            "Recall": round(recall, 2),
-            "Micro Precision": round(micro[0], 2),
-            "Micro Recall": round(micro[1], 2),
-            "Micro F1": round(micro[2], 2),
-            "Micro F0.5": round(micro[3], 2),
-            "Micro Acc.": round(micro[4], 2),
-            "Macro Precision": round(macro[0], 2),
-            "Macro Recall": round(macro[1], 2),
-            "Macro F1": round(macro[2], 2),
-            "Macro F0.5": round(macro[3], 2),
-            "Macro Accuracy": round(macro[4], 2)
+            "Accuracy": f"{accuracy * 100:.2f}%",
+            "Precision": f"{precision * 100:.2f}%",
+            "Recall": f"{recall * 100:.2f}%",
+            "Micro Precision": f"{micro[0] * 100:.2f}%",
+            "Micro Recall": f"{micro[1] * 100:.2f}%",
+            "Micro F1": f"{micro[2] * 100:.2f}%",
+            "Micro F0.5": f"{micro[3] * 100:.2f}%",
+            "Micro Acc.": f"{micro[4] * 100:.2f}%",
+            "Macro Precision": f"{macro[0] * 100:.2f}%",
+            "Macro Recall": f"{macro[1] * 100:.2f}%",
+            "Macro F1": f"{macro[2] * 100:.2f}%",
+            "Macro F0.5": f"{macro[3] * 100:.2f}%",
+            "Macro Accuracy": f"{macro[4] * 100:.2f}%"
         })
-
     results_df = pd.DataFrame(results_list)
+
+    col_widths = {
+        "TP": 7, "FP": 7, "FN": 7, "TN": 7,
+        "Accuracy": 10, "Precision": 10, "Recall": 10
+    }
+    for col in results_df.columns:
+        if col.startswith("Micro") or col.startswith("Macro"):
+            col_widths[col] = 14
+        elif col not in col_widths:
+            col_widths[col] = 20
+
     with pd.ExcelWriter(excel_spreadsheet_filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
         results_df.to_excel(writer, sheet_name=RESULT_WORKSHEET, index=False)
-        worksheet = writer.book[RESULT_WORKSHEET]
-
-        for col in range(1, worksheet.max_column + 1):
-            col_letter = get_column_letter(col)
-            worksheet.column_dimensions[col_letter].width = 20
-
-        for row in worksheet.iter_rows():
+        ws = writer.book[RESULT_WORKSHEET]
+        for i, col in enumerate(results_df.columns, 1):
+            letter = get_column_letter(i)
+            ws.column_dimensions[letter].width = col_widths.get(col, 20)
+        for row in ws.iter_rows():
             for cell in row:
+                cell.font = Font(name="Aptos", size=9)
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
     create_pivot(results_df, excel_spreadsheet_filepath)
