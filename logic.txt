@@ -12,6 +12,7 @@ GROUND_TRUTH_WORKSHEET = "GroundTruth"
 MODELS = ["v1", "v2", "transformer"]
 RESULT_WORKSHEET = "results"
 PIVOT_WORKSHEET = "pivot"
+DETAILS_WORKSHEET = "details"
 
 def get_intent_column(df):
     for col in df.columns:
@@ -118,11 +119,11 @@ def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
             "FP": FP,
             "FN": FN,
             "TN": TN,
-            "Accuracy": accuracy,
-            "Precision": precision,
-            "Recall": recall,
-            "F1": f1,
-            "F0.5": f05,
+            "Binary Accuracy": accuracy,
+            "Binary Precision": precision,
+            "Binary Recall": recall,
+            "Binary F1": f1,
+            "Binary F0.5": f05,
             "Micro Precision": micro[0],
             "Micro Recall": micro[1],
             "Micro F1": micro[2],
@@ -137,7 +138,7 @@ def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
     results_df = pd.DataFrame(results_list)
     col_widths = {
         "TP": 7, "FP": 7, "FN": 7, "TN": 7,
-        "Accuracy": 10, "Precision": 10, "Recall": 10, "F1": 10, "F0.5": 10
+        "Binary Accuracy": 12, "Binary Precision": 12, "Binary Recall": 12, "Binary F1": 12, "Binary F0.5": 12
     }
     for col in results_df.columns:
         if col.startswith("Micro") or col.startswith("Macro"):
@@ -159,8 +160,67 @@ def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
     create_pivot(results_df, excel_spreadsheet_filepath)
     return excel_spreadsheet_filepath
 
+def write_details_worksheet(filepath):
+    truth_df = pd.read_excel(filepath, sheet_name=GROUND_TRUTH_WORKSHEET, engine="openpyxl")
+    truth_series = get_intent_column(truth_df)
+    rows = []
+
+    for model in MODELS:
+        model_df = pd.read_excel(filepath, sheet_name=model, engine="openpyxl")
+        model_series = get_intent_column(model_df)
+        confusion = compute_confusion_by_class(truth_series, model_series)
+
+        for label, conf in confusion.items():
+            p, r, f1, _, _ = compute_metrics_from_confusion(conf)
+            rows.append({
+                "Model": model,
+                "Class": label,
+                "TP": conf["TP"],
+                "FP": conf["FP"],
+                "FN": conf["FN"],
+                "Precision": p,
+                "Recall": r,
+                "F1": f1
+            })
+
+        micro, macro = compute_micro_macro_metrics(confusion)
+        rows.append({
+            "Model": model,
+            "Class": "MICRO",
+            "TP": sum(conf["TP"] for conf in confusion.values()),
+            "FP": sum(conf["FP"] for conf in confusion.values()),
+            "FN": sum(conf["FN"] for conf in confusion.values()),
+            "Precision": micro[0],
+            "Recall": micro[1],
+            "F1": micro[2]
+        })
+        rows.append({
+            "Model": model,
+            "Class": "MACRO",
+            "TP": "-",
+            "FP": "-",
+            "FN": "-",
+            "Precision": macro[0],
+            "Recall": macro[1],
+            "F1": macro[2]
+        })
+
+    df = pd.DataFrame(rows)
+    with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        df.to_excel(writer, sheet_name=DETAILS_WORKSHEET, index=False)
+        ws = writer.book[DETAILS_WORKSHEET]
+        for i, col in enumerate(df.columns, 1):
+            ws.column_dimensions[get_column_letter(i)].width = 14
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, float):
+                    cell.number_format = '0.00%'
+                cell.font = Font(name="Aptos", size=9)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
 def main():
     updated_file = doSummaryCalculations(SPREADSHEET_PATH, INTENT_OF_INTEREST)
+    write_details_worksheet(updated_file)
     print(f"Spreadsheet updated: {updated_file}")
 
 if __name__ == "__main__":
