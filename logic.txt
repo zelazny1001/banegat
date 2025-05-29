@@ -178,7 +178,7 @@ def write_details_worksheet(filepath):
         confusion = compute_confusion_by_class(truth_series, model_series)
 
         for label, conf in confusion.items():
-            p, r, f1, _, acc = compute_metrics_from_confusion(conf)
+            p, r, f1, f05, acc = compute_metrics_from_confusion(conf)
             rows.append({
                 "Model": model,
                 "Class": label,
@@ -188,6 +188,7 @@ def write_details_worksheet(filepath):
                 "Precision": p,
                 "Recall": r,
                 "F1": f1,
+                "F0.5": f05,
                 "Accuracy": acc
             })
 
@@ -201,6 +202,7 @@ def write_details_worksheet(filepath):
             "Precision": micro[0],
             "Recall": micro[1],
             "F1": micro[2],
+            "F0.5": micro[3],
             "Accuracy": micro[4]
         })
         rows.append({
@@ -212,6 +214,7 @@ def write_details_worksheet(filepath):
             "Precision": macro[0],
             "Recall": macro[1],
             "F1": macro[2],
+            "F0.5": macro[3],
             "Accuracy": macro[4]
         })
 
@@ -219,32 +222,23 @@ def write_details_worksheet(filepath):
     with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
         df.to_excel(writer, sheet_name=DETAILS_WORKSHEET, index=False)
         ws = writer.book[DETAILS_WORKSHEET]
-
-        for i, col in enumerate(df.columns, 1):
-            col_letter = get_column_letter(i)
-            if col_letter == 'A':
-                ws.column_dimensions[col_letter].width = 18
-            elif col_letter == 'B':
-                ws.column_dimensions[col_letter].width = 22
-            elif col_letter in ['C', 'D', 'E', 'F', 'G', 'H', 'I']:
-                ws.column_dimensions[col_letter].width = 10
-            else:
-                ws.column_dimensions[col_letter].width = 14
-
+        ws.column_dimensions["A"].width = 18
+        ws.column_dimensions["B"].width = 22
+        for col_letter in "CDEFGHIJ":
+            ws.column_dimensions[col_letter].width = 10
         for row_idx, row in enumerate(ws.iter_rows()):
             for col_idx, cell in enumerate(row):
-                col_letter = get_column_letter(col_idx + 1)
-                if isinstance(cell.value, float):
-                    cell.number_format = '0.00%'
-                cell.font = Font(name="Aptos", size=9)
                 if row_idx == 0:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
-                elif col_letter == 'A':
+                elif col_idx == 0:
                     cell.alignment = Alignment(horizontal="left", vertical="center")
-                elif col_letter == 'B':
+                elif col_idx == 1:
                     cell.alignment = Alignment(horizontal="right", vertical="center")
                 else:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
+                if isinstance(cell.value, float):
+                    cell.number_format = '0.00%'
+                cell.font = Font(name="Aptos", size=9)
 
 def main():
     updated_file = doSummaryCalculations(SPREADSHEET_PATH, INTENT_OF_INTEREST)
