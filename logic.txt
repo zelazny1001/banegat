@@ -75,11 +75,10 @@ def compute_micro_macro_metrics(confusion_dict):
 def create_pivot(results_df, filepath):
     pivot_df = results_df.set_index("Model").transpose()
     pivot_df = pivot_df[~pivot_df.index.isin({"TP", "FP", "FN", "TN"})]
-    for metric in pivot_df.index:
-        pivot_df.loc[metric] = pivot_df.loc[metric].astype(float).apply(lambda x: f"{x * 100:.2f}%")
+    pivot_df = pivot_df.astype(float).round(2)
 
     with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-        pivot_df.to_excel(writer, sheet_name=PIVOT_WORKSHEET)
+        pivot_df.to_excel(writer, sheet_name=PIVOT_WORKSHEET, float_format="%.2f%%")
         ws = writer.book[PIVOT_WORKSHEET]
         aptos_font = Font(name="Aptos", size=9)
         bold_font = Font(name="Aptos", size=9, bold=True)
