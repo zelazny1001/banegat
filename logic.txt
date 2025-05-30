@@ -1,267 +1,98 @@
-# create_confusion_matrix.py
+# micro_metrics_calculation
 
+from __future__ import annotations
+from typing import List, Tuple
 import pandas as pd
-from collections import defaultdict
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Alignment, Font, Border, Side
+from openpyxl.styles import Alignment, Font
 
 # globals
 SPREADSHEET_PATH = "accuracy-test.xlsx"
-INTENT_OF_INTEREST = "INTENT_1"
 GROUND_TRUTH_WORKSHEET = "GroundTruth"
-MODELS = ["v1", "v2", "transformer"]
-RESULT_WORKSHEET = "results"
-PIVOT_WORKSHEET = "pivot"
-DETAILS_WORKSHEET = "details"
+PREDICTORS = ["v1", "v2", "transformer"]
+INTENTS = ["INTENT_1", "INTENT_2", "INTENT_3"]
+MICRO_RESULTS_WORKSHEET = "micro"
 
-def get_intent_column(df):
+def get_intent_column(df: pd.DataFrame) -> pd.Series:
     for col in df.columns:
         if col.strip().lower() == "intent":
             return df[col]
     raise ValueError("No 'Intent' column found in the DataFrame.")
 
-def compute_confusion_by_class(truth, pred):
-    labels = sorted(set(truth) | set(pred))
+def load_intent_series(filepath: str, worksheet_name: str) -> pd.Series:
+    df = pd.read_excel(filepath, sheet_name=worksheet_name, engine="openpyxl")
+    return get_intent_column(df)
 
-    confusion = {label: {"TP": 0, "FP": 0, "FN": 0, "TN": 0} for label in labels}
-    for t, p in zip(truth, pred):
-        for label in labels:
-            if t == label and p == label:
-                confusion[label]["TP"] += 1
-            elif t != label and p == label:
-                confusion[label]["FP"] += 1
-            elif t == label and p != label:
-                confusion[label]["FN"] += 1
-            elif t != label and p != label:
-                confusion[label]["TN"] += 1
-    return confusion
+def compute_one_vs_all(ground_truth: pd.Series, prediction: pd.Series, intent: str) -> Tuple[int, int, int]:
+    TP = ((ground_truth == intent) & (prediction == intent)).sum()
+    FP = ((ground_truth != intent) & (prediction == intent)).sum()
+    FN = ((ground_truth == intent) & (prediction != intent)).sum()
+    return TP, FP, FN
 
-def compute_metrics_from_confusion(confusion):
-    TP = confusion["TP"]
-    FP = confusion["FP"]
-    FN = confusion["FN"]
-    TN = confusion["TN"]
-    total = TP + FP + FN + TN
+def compute_totals(ground_truth: pd.Series, prediction: pd.Series, intents: List[str]) -> Tuple[int, int, int]:
+    total_TP = total_FP = total_FN = 0
+    for intent in intents:
+        TP, FP, FN = compute_one_vs_all(ground_truth, prediction, intent)
+        total_TP += TP
+        total_FP += FP
+        total_FN += FN
+    return total_TP, total_FP, total_FN
+
+def compute_micro_metrics(TP: int, FP: int, FN: int) -> Tuple[float, float, float, float]:
     precision = TP / (TP + FP) if (TP + FP) > 0 else 0
     recall = TP / (TP + FN) if (TP + FN) > 0 else 0
     f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
     f05 = (1.25 * precision * recall) / (0.25 * precision + recall) if (precision + recall) > 0 else 0
-    accuracy = (TP + TN) / total if total > 0 else 0
-    return precision, recall, f1, f05, accuracy
+    return precision, recall, f1, f05
 
-def print_confusion_summary(model: str, confusion: dict) -> None:
-    print(f"\nModel: {model}")
-    for label, counts in confusion.items():
-        print(f"  Class '{label}': TP={counts['TP']}, FP={counts['FP']}, FN={counts['FN']}, TN={counts['TN']}")
+def prepare_micro_results(filepath: str, intents: List[str]) -> pd.DataFrame:
+    truth_series = load_intent_series(filepath, GROUND_TRUTH_WORKSHEET)
+    rows = []
 
-def compute_micro_macro_metrics(confusion_dict):
-    total_TP = total_FP = total_FN = total_TN = 0
-    precisions, recalls, f1s, f05s, accs = [], [], [], [], []
-
-    for conf in confusion_dict.values():
-        TP, FP, FN, TN = conf["TP"], conf["FP"], conf["FN"], conf["TN"]
-        total_TP += TP
-        total_FP += FP
-        total_FN += FN
-        total_TN += TN
-        p, r, f1, f05, acc = compute_metrics_from_confusion(conf)
-        precisions.append(p)
-        recalls.append(r)
-        f1s.append(f1)
-        f05s.append(f05)
-        accs.append(acc)
-
-    micro_precision = total_TP / (total_TP + total_FP) if (total_TP + total_FP) > 0 else 0
-    micro_recall = total_TP / (total_TP + total_FN) if (total_TP + total_FN) > 0 else 0
-    micro_f1 = (2 * micro_precision * micro_recall) / (micro_precision + micro_recall) if (micro_precision + micro_recall) > 0 else 0
-    micro_f05 = (1.25 * micro_precision * micro_recall) / (0.25 * micro_precision + micro_recall) if (micro_precision + micro_recall) > 0 else 0
-    micro_accuracy = (total_TP + total_TN) / (total_TP + total_FP + total_FN + total_TN) if (total_TP + total_FP + total_FN + total_TN) > 0 else 0
-
-    micro = (micro_precision, micro_recall, micro_f1, micro_f05, micro_accuracy)
-    macro = (
-        sum(precisions)/len(precisions),
-        sum(recalls)/len(recalls),
-        sum(f1s)/len(f1s),
-        sum(f05s)/len(f05s),
-        sum(accs)/len(accs)
-    )
-
-    return micro, macro
-
-def create_pivot(results_df, filepath):
-    pivot_df = results_df.set_index("Model").transpose()
-    pivot_df = pivot_df[~pivot_df.index.isin({"TP", "FP", "FN", "TN"})]
-    pivot_df = pivot_df.astype(float).round(4)
-    with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-        pivot_df.to_excel(writer, sheet_name=PIVOT_WORKSHEET)
-        ws = writer.book[PIVOT_WORKSHEET]
-        aptos = Font(name="Aptos", size=9)
-        bold = Font(name="Aptos", size=9, bold=True)
-        light_gray_border = Border(
-            left=Side(style="thin", color="D3D3D3"),
-            right=Side(style="thin", color="D3D3D3"),
-            top=Side(style="thin", color="D3D3D3"),
-            bottom=Side(style="thin", color="D3D3D3")
-        )
-        ws["A1"].value = None
-        ws.column_dimensions["A"].width = 13
-        for col in range(2, ws.max_column + 1):
-            ws.column_dimensions[get_column_letter(col)].width = 18
-        for row_idx, row in enumerate(ws.iter_rows()):
-            for col_idx, cell in enumerate(row):
-                if col_idx > 0:
-                    cell.number_format = '0.00%'
-                cell.font = aptos if col_idx == 0 else bold if row_idx == 0 else aptos
-                cell.alignment = Alignment(horizontal="right" if col_idx == 0 else "center", vertical="center")
-                cell.border = light_gray_border
-
-def doSummaryCalculations(excel_spreadsheet_filepath, intent_of_interest):
-    truth_df = pd.read_excel(excel_spreadsheet_filepath, sheet_name=GROUND_TRUTH_WORKSHEET, engine="openpyxl")
-    truth_series = get_intent_column(truth_df)
-    results_list = []
-    for model in MODELS:
-        model_df = pd.read_excel(excel_spreadsheet_filepath, sheet_name=model, engine="openpyxl")
-        model_series = get_intent_column(model_df)
-        if len(model_series) != len(truth_series):
-            raise ValueError(f"Row count mismatch between {GROUND_TRUTH_WORKSHEET} and {model}.")
-        TP = ((truth_series == intent_of_interest) & (model_series == intent_of_interest)).sum()
-        FP = ((truth_series != intent_of_interest) & (model_series == intent_of_interest)).sum()
-        FN = ((truth_series == intent_of_interest) & (model_series != intent_of_interest)).sum()
-        TN = ((truth_series != intent_of_interest) & (model_series != intent_of_interest)).sum()
-        accuracy = (TP + TN) / (TP + FP + FN + TN) if (TP + FP + FN + TN) > 0 else 0
-        precision = TP / (TP + FP) if (TP + FP) > 0 else 0
-        recall = TP / (TP + FN) if (TP + FN) > 0 else 0
-        f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-        f05 = (1.25 * precision * recall) / (0.25 * precision + recall) if (precision + recall) > 0 else 0
-        confusion = compute_confusion_by_class(truth_series, model_series)
-
-        print_confusion_summary(model, confusion)  # diagnostic output
-
-        micro, macro = compute_micro_macro_metrics(confusion)
-        results_list.append({
-            "Model": model,
+    for predictor in PREDICTORS:
+        pred_series = load_intent_series(filepath, predictor)
+        if len(pred_series) != len(truth_series):
+            raise ValueError(f"Row count mismatch between {GROUND_TRUTH_WORKSHEET} and {predictor}.")
+        TP, FP, FN = compute_totals(truth_series, pred_series, intents)
+        precision, recall, f1, f05 = compute_micro_metrics(TP, FP, FN)
+        accuracy = TP / len(truth_series) if len(truth_series) > 0 else 0
+        rows.append({
+            "Predictor": predictor,
             "TP": TP,
             "FP": FP,
             "FN": FN,
-            "TN": TN,
-            "Binary Accuracy": accuracy,
-            "Binary Precision": precision,
-            "Binary Recall": recall,
-            "Binary F1": f1,
-            "Binary F0.5": f05,
-            "Micro Precision": micro[0],
-            "Micro Recall": micro[1],
-            "Micro F1": micro[2],
-            "Micro F0.5": micro[3],
-            "Micro Accuracy": micro[4],
-            "Macro Precision": macro[0],
-            "Macro Recall": macro[1],
-            "Macro F1": macro[2],
-            "Macro F0.5": macro[3],
-            "Macro Accuracy": macro[4]
-        })
-    results_df = pd.DataFrame(results_list)
-    col_widths = {
-        "TP": 7, "FP": 7, "FN": 7, "TN": 7,
-        "Binary Accuracy": 12, "Binary Precision": 12, "Binary Recall": 12, "Binary F1": 12, "Binary F0.5": 12
-    }
-    for col in results_df.columns:
-        if col.startswith("Micro") or col.startswith("Macro"):
-            col_widths[col] = 14
-        elif col not in col_widths:
-            col_widths[col] = 20
-    with pd.ExcelWriter(excel_spreadsheet_filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-        results_df.to_excel(writer, sheet_name=RESULT_WORKSHEET, index=False)
-        ws = writer.book[RESULT_WORKSHEET]
-        for i, col in enumerate(results_df.columns, 1):
-            ws.column_dimensions[get_column_letter(i)].width = col_widths.get(col, 20)
-        for row_idx, row in enumerate(ws.iter_rows()):
-            for col_idx, cell in enumerate(row):
-                col_name = results_df.columns[col_idx]
-                if row_idx > 0 and col_name not in {"TP", "FP", "FN", "TN", "Model"}:
-                    cell.number_format = '0.00%'
-                cell.font = Font(name="Aptos", size=9)
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-    create_pivot(results_df, excel_spreadsheet_filepath)
-    return excel_spreadsheet_filepath
-
-def write_details_worksheet(filepath):
-    truth_df = pd.read_excel(filepath, sheet_name=GROUND_TRUTH_WORKSHEET, engine="openpyxl")
-    truth_series = get_intent_column(truth_df)
-    rows = []
-
-    for model in MODELS:
-        model_df = pd.read_excel(filepath, sheet_name=model, engine="openpyxl")
-        model_series = get_intent_column(model_df)
-        confusion = compute_confusion_by_class(truth_series, model_series)
-
-        for label, conf in confusion.items():
-            p, r, f1, f05, acc = compute_metrics_from_confusion(conf)
-            rows.append({
-                "Model": model,
-                "Class": label,
-                "TP": conf["TP"],
-                "FP": conf["FP"],
-                "FN": conf["FN"],
-                "Precision": p,
-                "Recall": r,
-                "F1": f1,
-                "F0.5": f05,
-                "Accuracy": acc
-            })
-
-        micro, macro = compute_micro_macro_metrics(confusion)
-        rows.append({
-            "Model": model,
-            "Class": "MICRO",
-            "TP": sum(conf["TP"] for conf in confusion.values()),
-            "FP": sum(conf["FP"] for conf in confusion.values()),
-            "FN": sum(conf["FN"] for conf in confusion.values()),
-            "Precision": micro[0],
-            "Recall": micro[1],
-            "F1": micro[2],
-            "F0.5": micro[3],
-            "Accuracy": micro[4]
-        })
-        rows.append({
-            "Model": model,
-            "Class": "MACRO",
-            "TP": "-",
-            "FP": "-",
-            "FN": "-",
-            "Precision": macro[0],
-            "Recall": macro[1],
-            "F1": macro[2],
-            "F0.5": macro[3],
-            "Accuracy": macro[4]
+            "Precision": precision,
+            "Recall": recall,
+            "F1": f1,
+            "F0.5": f05,
+            "Accuracy": accuracy
         })
 
-    df = pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+
+def write_micro_results(filepath: str, df: pd.DataFrame) -> None:
     with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-        df.to_excel(writer, sheet_name=DETAILS_WORKSHEET, index=False)
-        ws = writer.book[DETAILS_WORKSHEET]
-        ws.column_dimensions["A"].width = 18
-        ws.column_dimensions["B"].width = 22
-        for col_letter in "CDEFGHIJ":
-            ws.column_dimensions[col_letter].width = 10
+        df.to_excel(writer, sheet_name=MICRO_RESULTS_WORKSHEET, index=False)
+        ws = writer.book[MICRO_RESULTS_WORKSHEET]
+        for i, col in enumerate(df.columns, 1):
+            ws.column_dimensions[get_column_letter(i)].width = 12
         for row_idx, row in enumerate(ws.iter_rows()):
             for col_idx, cell in enumerate(row):
                 if row_idx == 0:
+                    cell.font = Font(name="Aptos", size=9, bold=True)
                     cell.alignment = Alignment(horizontal="center", vertical="center")
-                elif col_idx == 0:
-                    cell.alignment = Alignment(horizontal="left", vertical="center")
-                elif col_idx == 1:
-                    cell.alignment = Alignment(horizontal="right", vertical="center")
                 else:
+                    cell.font = Font(name="Aptos", size=9)
                     cell.alignment = Alignment(horizontal="center", vertical="center")
-                if isinstance(cell.value, float):
-                    cell.number_format = '0.00%'
-                cell.font = Font(name="Aptos", size=9)
+                    if isinstance(cell.value, float):
+                        cell.number_format = '0.00%'
 
-def main():
-    updated_file = doSummaryCalculations(SPREADSHEET_PATH, INTENT_OF_INTEREST)
-    write_details_worksheet(updated_file)
-    print(f"Spreadsheet updated: {updated_file}")
+def doMicroCalculations(filepath: str, intents: List[str]) -> None:
+    df = prepare_micro_results(filepath, intents)
+    write_micro_results(filepath, df)
+
+def main() -> None:
+    doMicroCalculations(SPREADSHEET_PATH, INTENTS)
 
 if __name__ == "__main__":
     main()
