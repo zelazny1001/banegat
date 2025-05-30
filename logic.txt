@@ -55,12 +55,15 @@ def print_confusion_summary(model: str, confusion: dict) -> None:
         print(f"  Class '{label}': TP={counts['TP']}, FP={counts['FP']}, FN={counts['FN']}, TN={counts['TN']}")
 
 def compute_micro_macro_metrics(confusion_dict):
-    totals = defaultdict(int)
+    total_TP = total_FP = total_FN = total_TN = 0
     precisions, recalls, f1s, f05s, accs = [], [], [], [], []
 
-    for label, conf in confusion_dict.items():
-        for k in conf:
-            totals[k] += conf[k]
+    for conf in confusion_dict.values():
+        TP, FP, FN, TN = conf["TP"], conf["FP"], conf["FN"], conf["TN"]
+        total_TP += TP
+        total_FP += FP
+        total_FN += FN
+        total_TN += TN
         p, r, f1, f05, acc = compute_metrics_from_confusion(conf)
         precisions.append(p)
         recalls.append(r)
@@ -68,7 +71,13 @@ def compute_micro_macro_metrics(confusion_dict):
         f05s.append(f05)
         accs.append(acc)
 
-    micro = compute_metrics_from_confusion(totals)
+    micro_precision = total_TP / (total_TP + total_FP) if (total_TP + total_FP) > 0 else 0
+    micro_recall = total_TP / (total_TP + total_FN) if (total_TP + total_FN) > 0 else 0
+    micro_f1 = (2 * micro_precision * micro_recall) / (micro_precision + micro_recall) if (micro_precision + micro_recall) > 0 else 0
+    micro_f05 = (1.25 * micro_precision * micro_recall) / (0.25 * micro_precision + micro_recall) if (micro_precision + micro_recall) > 0 else 0
+    micro_accuracy = (total_TP + total_TN) / (total_TP + total_FP + total_FN + total_TN) if (total_TP + total_FP + total_FN + total_TN) > 0 else 0
+
+    micro = (micro_precision, micro_recall, micro_f1, micro_f05, micro_accuracy)
     macro = (
         sum(precisions)/len(precisions),
         sum(recalls)/len(recalls),
@@ -76,6 +85,7 @@ def compute_micro_macro_metrics(confusion_dict):
         sum(f05s)/len(f05s),
         sum(accs)/len(accs)
     )
+
     return micro, macro
 
 def create_pivot(results_df, filepath):
