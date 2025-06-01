@@ -5,7 +5,6 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment, Font, Border, Side
 from typing import Any, Dict, Tuple, List
 
-
 # globals
 SPREADSHEET_PATH: str = "accuracy-test.xlsx"
 EXCLUDED_INTENT: str = "OTHER"
@@ -53,7 +52,6 @@ def compute_confusion_by_class(
                 confusion[label]["TN"] += 1
     return confusion
 
-
 def compute_metrics_from_confusion(
     confusion: Dict[str, int]
 ) -> Tuple[float, float, float, float, float]:
@@ -71,7 +69,6 @@ def compute_metrics_from_confusion(
 
     return precision, recall, f1, f05, accuracy
 
-
 def print_confusion_summary(
     model: str,
     confusion: Dict[Any, Dict[str, int]]
@@ -82,7 +79,6 @@ def print_confusion_summary(
             f"  Class '{label}': "
             f"TP={counts['TP']}, FP={counts['FP']}, FN={counts['FN']}, TN={counts['TN']}"
         )
-
 
 def compute_micro_macro_metrics(
     confusion_dict: Dict[Any, Dict[str, int]]
@@ -138,8 +134,17 @@ def create_pivot(
     results_df: pd.DataFrame,
     filepath: str
 ) -> None:
-    pivot_df: pd.DataFrame = results_df.set_index(["Model", "Intent"]).transpose()
-    pivot_df = pivot_df[~pivot_df.index.isin({"TP", "FP", "FN", "TN"})]
+    """
+    build a pivot that shows only the overall binary/micro/macro metrics,
+    ignoring TP/FP/FN/TN and dropping the 'Intent' level.
+    """
+    # Select only metric columns (exclude TP, FP, FN, TN, Model, Intent)
+    metric_cols = [
+        "Binary Precision", "Binary Recall", "Binary F1", "Binary F0.5", "Binary Accuracy",
+        "Micro Precision", "Micro Recall", "Micro F1", "Micro F0.5", "Micro Accuracy",
+        "Macro Precision", "Macro Recall", "Macro F1", "Macro F0.5", "Macro Accuracy"
+    ]
+    pivot_df: pd.DataFrame = results_df.set_index("Model")[metric_cols].transpose()
     pivot_df = pivot_df.astype(float).round(4)
 
     with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
@@ -207,7 +212,7 @@ def doSummaryCalculations(
         # Compute micro/macro once per model, excluding EXCLUDED_INTENT
         micro, macro = compute_micro_macro_metrics(confusion)
 
-        # For each label except EXCLUDED_INTENT, compute binary metrics
+        # ror each label except EXCLUDED_INTENT, compute binary metrics
         for label, binary_conf in confusion.items():
             if label == EXCLUDED_INTENT:
                 continue
@@ -226,11 +231,11 @@ def doSummaryCalculations(
                 "FP": FP,
                 "FN": FN,
                 "TN": TN,
-                "Binary Accuracy": accuracy,
                 "Binary Precision": precision,
                 "Binary Recall": recall,
                 "Binary F1": f1,
                 "Binary F0.5": f05,
+                "Binary Accuracy": accuracy,
                 "Micro Precision": micro[0],
                 "Micro Recall": micro[1],
                 "Micro F1": micro[2],
@@ -272,7 +277,6 @@ def doSummaryCalculations(
 
     create_pivot(results_df, excel_spreadsheet_filepath)
     return excel_spreadsheet_filepath
-
 
 def write_details_worksheet(filepath: str) -> None:
     truth_df: pd.DataFrame = pd.read_excel(
@@ -350,7 +354,6 @@ def write_details_worksheet(filepath: str) -> None:
                 if isinstance(cell.value, float):
                     cell.number_format = '0.00%'
                 cell.font = Font(name="Aptos", size=9)
-
 
 def main() -> None:
     updated_file: str = doSummaryCalculations(SPREADSHEET_PATH)
