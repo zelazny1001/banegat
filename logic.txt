@@ -1,0 +1,51 @@
+from __future__ import annotations
+from typing import List, Tuple
+from openpyxl import load_workbook, Workbook
+from openpyxl.worksheet.worksheet import Worksheet
+
+INPUT_SPREADSHEET: str = "/path/to/my/spreadsheet"
+TARGET_WORKSHEET: str = "target"
+GROUND_TRUTH: str = "GroundTruth"
+PREDICTED: str = "intents"
+INTENT_OF_INTEREST: str = "INTENT1"
+
+def read_input_data(path: str, sheet_name: str) -> Tuple[Workbook, Worksheet]:
+    wb: Workbook = load_workbook(path)
+    ws: Worksheet = wb[sheet_name]
+    return wb, ws
+
+def compute_metrics_column(ws: Worksheet, ground_truth_field: str, predicted_field: str, intent_of_interest: str) -> List[str]:
+    header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+    gt_idx = header.index(ground_truth_field)
+    pred_idx = header.index(predicted_field)
+    metrics: List[str] = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        gt = row[gt_idx]
+        pred = row[pred_idx]
+        if pred == intent_of_interest and gt == intent_of_interest:
+            metrics.append("TP")
+        elif pred == intent_of_interest and gt != intent_of_interest:
+            metrics.append("FP")
+        elif pred != intent_of_interest and gt == intent_of_interest:
+            metrics.append("FN")
+        else:
+            metrics.append("TN")
+    return metrics
+
+def insert_metrics_column(ws: Worksheet, metrics_values: List[str]) -> None:
+    col = ws.max_column + 1
+    ws.cell(row=1, column=col, value="METRICS")
+    for i, value in enumerate(metrics_values, start=2):
+        ws.cell(row=i, column=col, value=value)
+
+def update_spreadsheet(wb: Workbook, path: str) -> None:
+    wb.save(path)
+
+def main() -> None:
+    wb, ws = read_input_data(INPUT_SPREADSHEET, TARGET_WORKSHEET)
+    metrics = compute_metrics_column(ws, GROUND_TRUTH, PREDICTED, INTENT_OF_INTEREST)
+    insert_metrics_column(ws, metrics)
+    update_spreadsheet(wb, INPUT_SPREADSHEET)
+
+if __name__ == "__main__":
+    main()
