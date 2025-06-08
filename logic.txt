@@ -41,6 +41,12 @@ def compute_metrics_column(ws: Worksheet, ground_truth_field: str, predicted_fie
             metrics.append("TN")
     return metrics
 
+def remove_old_outcome_columns(ws: Worksheet) -> None:
+    header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+    cols = [i+1 for i, v in enumerate(header) if v == OUTCOME_COLUMN_NAME]
+    for idx in sorted(cols, reverse=True):
+        ws.delete_cols(idx)
+
 def insert_metrics_column(ws: Worksheet, metrics_values: List[str]) -> None:
     col = ws.max_column + 1
     ws.cell(row=1, column=col, value=OUTCOME_COLUMN_NAME)
@@ -75,6 +81,7 @@ def update_spreadsheet(wb: Workbook, path: str) -> None:
 
 def main() -> None:
     wb, ws = read_input_data(INPUT_SPREADSHEET, TARGET_WORKSHEET)
+    remove_old_outcome_columns(ws)
     metrics = compute_metrics_column(ws, GROUND_TRUTH, PREDICTED, POSITIVE_CLASS)
     insert_metrics_column(ws, metrics)
     setSheetStyle(ws)
