@@ -1,13 +1,22 @@
+# create_outcomes.py
+# prepare TP, FP, FN counts for a positive class
+
 from __future__ import annotations
 from typing import List, Tuple
 from openpyxl import load_workbook, Workbook
 from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.styles import Font, Alignment
 
 INPUT_SPREADSHEET: str = "/path/to/my/spreadsheet"
 TARGET_WORKSHEET: str = "target"
 GROUND_TRUTH: str = "GroundTruth"
 PREDICTED: str = "intents"
-INTENT_OF_INTEREST: str = "INTENT1"
+OUTCOME_COLUMN_NAME = "outcome"
+POSITIVE_CLASS: str = "INTENT1"
+COL_A_WIDTH = 85
+COL_B_WIDTH = 40
+COL_C_WIDTH = 40
+COL_D_WIDTH = 9
 
 def read_input_data(path: str, sheet_name: str) -> Tuple[Workbook, Worksheet]:
     wb: Workbook = load_workbook(path)
@@ -34,17 +43,41 @@ def compute_metrics_column(ws: Worksheet, ground_truth_field: str, predicted_fie
 
 def insert_metrics_column(ws: Worksheet, metrics_values: List[str]) -> None:
     col = ws.max_column + 1
-    ws.cell(row=1, column=col, value="METRICS")
+    ws.cell(row=1, column=col, value=OUTCOME_COLUMN_NAME)
     for i, value in enumerate(metrics_values, start=2):
         ws.cell(row=i, column=col, value=value)
+
+def setSheetStyle(ws: Worksheet) -> None:
+    header_font = Font(name="Aptos", size=9, bold=True)
+    data_font = Font(name="Aptos", size=9)
+    header_align = Alignment(horizontal="center")
+    left_align = Alignment(horizontal="left")
+    center_align = Alignment(horizontal="center")
+    for cell in ws[1]:
+        cell.font = header_font
+        cell.alignment = header_align
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.font = data_font
+            if cell.column_letter in ("A", "B", "C"):
+                cell.alignment = left_align
+            elif cell.column_letter == "D":
+                cell.alignment = center_align
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    ws.column_dimensions["A"].width = COL_A_WIDTH
+    ws.column_dimensions["B"].width = COL_B_WIDTH
+    ws.column_dimensions["C"].width = COL_C_WIDTH
+    ws.column_dimensions["D"].width = COL_D_WIDTH
 
 def update_spreadsheet(wb: Workbook, path: str) -> None:
     wb.save(path)
 
 def main() -> None:
     wb, ws = read_input_data(INPUT_SPREADSHEET, TARGET_WORKSHEET)
-    metrics = compute_metrics_column(ws, GROUND_TRUTH, PREDICTED, INTENT_OF_INTEREST)
+    metrics = compute_metrics_column(ws, GROUND_TRUTH, PREDICTED, POSITIVE_CLASS)
     insert_metrics_column(ws, metrics)
+    setSheetStyle(ws)
     update_spreadsheet(wb, INPUT_SPREADSHEET)
 
 if __name__ == "__main__":
