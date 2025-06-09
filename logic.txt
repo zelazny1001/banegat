@@ -1,57 +1,42 @@
-# vg_parallel_launcher.py
-import sys
-import subprocess
-import time
+# cleanse_raw_log_capture.py -- first line of implementation file
+from __future__ import annotations
 import os
+from datetime import datetime
 
-SCRIPT_ROOT = "/projects/root/"
-SCRIPT_NAME = "local_voice_gateway_simulator_2.py"
-NUM_INSTANCES = 10
-INSTANCES_PER_SECOND = 100
-POLL_INTERVAL = 0.2
+INPUT_DIR = "/the/input/"
+INPUT_FILEPATH = INPUT_DIR + "inputfilename.txt"
+OUTPUT_DIR = INPUT_DIR
 
-def launch_instances(script_root, script_name, num_instances, rate):
-    interval = 1.0 / rate
-    start_time = time.time()
-    script_path = os.path.join(script_root, script_name)
-    procs = {}
-    for i in range(1, num_instances + 1):
-        target = start_time + (i - 1) * interval
-        sleep = target - time.time()
-        if sleep > 0:
-            time.sleep(sleep)
-        p = subprocess.Popen(
-            [sys.executable, script_path],
-            cwd=script_root
-        )
-        elapsed = time.time() - start_time
-        print(f"[{i}/{num_instances}] Launched PID={p.pid} at {elapsed:.2f}s")
-        procs[i] = p
-    return procs, start_time
+def parse_line(line: str) -> list[str]:
+    return [segment.split(":", 1)[1] for segment in line.rstrip("\n").split("|")]
 
-def monitor_processes(procs, start_time, poll_interval):
-    remaining = set(procs)
-    completed = 0
-    total = len(procs)
-    while remaining:
-        for i in list(remaining):
-            p = procs[i]
-            if p.poll() is not None:
-                completed += 1
-                elapsed = time.time() - start_time
-                print(f"[{completed}/{total}] Elapsed: {elapsed:.2f}s")
-                remaining.remove(i)
-        time.sleep(poll_interval)
-    print("All instances completed.")
+HEADER = [
+    "csid",
+    "exec_ms",
+    "threadName",
+    "threadsActive",
+    "heapTotal",
+    "heapFree",
+    "heapMax",
+]
 
-def main():
-    procs, start_time = launch_instances(
-        SCRIPT_ROOT,
-        SCRIPT_NAME,
-        NUM_INSTANCES,
-        INSTANCES_PER_SECOND
-    )
-    monitor_processes(procs, start_time, POLL_INTERVAL)
+def generate_output_filename(input_file: str, output_dir: str) -> str:
+    base = os.path.splitext(os.path.basename(input_file))[0]
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    return os.path.join(output_dir, f"{base}-{timestamp}.txt")
+
+def cleanse_file(input_file: str, output_dir: str) -> str:
+    output_file = generate_output_filename(input_file, output_dir)
+    with open(input_file, "r") as infile, open(output_file, "w") as outfile:
+        outfile.write("|".join(HEADER) + "\n")
+        for line in infile:
+            values = parse_line(line)
+            outfile.write("|".join(values) + "\n")
+    return output_file
+
+def main() -> None:
+    result = cleanse_file(INPUT_FILEPATH, OUTPUT_DIR)
+    print(result)
 
 if __name__ == "__main__":
     main()
