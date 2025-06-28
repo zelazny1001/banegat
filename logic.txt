@@ -1,9 +1,0 @@
-def get_suffix_from_filename(file_path: str, input_filename_prefix: str) -> str:
-    input_filename = os.path.splitext(os.path.basename(file_path))[0]
-    if not input_filename.startswith(input_filename_prefix):
-        return input_filename
-    prefix_len = len(input_filename_prefix)
-    dash_position = input_filename.find("-", prefix_len)
-    if dash_position == -1:
-        return input_filename
-    return input_filename[dash_position + 1:]
