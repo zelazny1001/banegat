@@ -1,3 +1,18 @@
+from __future__ import annotations
+import re
+from openpyxl import load_workbook
+
+SPREADSHEET_DIR = "j:/tmp/braces/"
+SPREADSHEET_LOCATION = SPREADSHEET_DIR + "test-braces.xlsx"
+INDECIPHERABLE = "{INDECIPHERABLE}"
+
+GROUND_TRUTH_COL = "ground_truth"
+TRANSCRIPT_COL   = "transcript"
+BRACED_COL       = "braced_transcript"
+
+def collapse_spaces(text: str) -> str:
+    return re.sub(r' +', ' ', text)
+
 def highlight_indecipherable(source: str, target: str) -> str:
     source = collapse_spaces(source).strip()
     target = collapse_spaces(target)
@@ -17,3 +32,22 @@ def highlight_indecipherable(source: str, target: str) -> str:
     for i, hidden in enumerate(groups, start=1):
         output += " {" + hidden.strip() + "} " + fixeds[i]
     return output.strip()
+
+def update_braced_transcripts(spreadsheet_path: str) -> None:
+    wb = load_workbook(spreadsheet_path)
+    ws = wb.active
+    headers = [cell.value for cell in ws[1]]
+    if BRACED_COL not in headers:
+        headers.append(BRACED_COL)
+        ws.cell(row=1, column=len(headers), value=BRACED_COL)
+    br_idx = headers.index(BRACED_COL) + 1
+    gt_idx = headers.index(GROUND_TRUTH_COL) + 1
+    tr_idx = headers.index(TRANSCRIPT_COL) + 1
+    for r in range(2, ws.max_row + 1):
+        source = ws.cell(row=r, column=gt_idx).value or ""
+        target = ws.cell(row=r, column=tr_idx).value or ""
+        ws.cell(row=r, column=br_idx, value=highlight_indecipherable(source, target))
+    wb.save(spreadsheet_path)
+
+if __name__ == "__main__":
+    update_braced_transcripts(SPREADSHEET_LOCATION)
