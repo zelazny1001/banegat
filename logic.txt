@@ -1,0 +1,19 @@
+def highlight_indecipherable(source: str, target: str) -> str:
+    source = collapse_spaces(source).strip()
+    target = collapse_spaces(target)
+    parts = re.split(INDECIPHERABLE, source)
+    if len(parts) == 2 and not parts[0].strip() and not parts[1].strip():
+        return f"{{{target.strip()}}}"
+    fixeds = [p.strip() for p in parts]
+    pattern = "^" + "".join(
+        re.escape(fixeds[i]) + "(.*?)"
+        for i in range(len(fixeds) - 1)
+    ) + re.escape(fixeds[-1]) + "$"
+    m = re.match(pattern, target.strip(), flags=re.DOTALL)
+    if not m:
+        return f"{{{target.strip()}}}"
+    groups = m.groups()
+    output = fixeds[0]
+    for i, hidden in enumerate(groups, start=1):
+        output += " {" + hidden.strip() + "} " + fixeds[i]
+    return output.strip()
