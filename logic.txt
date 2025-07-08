@@ -1,3 +1,5 @@
+# ground_truth_appender.py - append GT column given filename, seqNum analysis worksheet
+
 import os
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
