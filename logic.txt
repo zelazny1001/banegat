@@ -5,10 +5,10 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
-SPREADSHEET_DIR = "j:/tmp/braces/"
+SPREADSHEET_DIR      = "j:/tmp/braces/"
 SPREADSHEET_LOCATION = SPREADSHEET_DIR + "test-braces.xlsx"
-WORKSHEET_NAME     = "Sheet1"
-INDECIPHERABLE     = r"(?i)\{INDECIPHERABLE\}"
+WORKSHEET_NAME       = "Sheet1"
+INDECIPHERABLE_MARKER = r'(?i)\{indecipherable\}'
 
 GROUND_TRUTH_COL = "ground_truth"
 TRANSCRIPT_COL   = "transcript"
@@ -17,29 +17,64 @@ BRACED_COL       = "braced_transcript"
 def collapse_spaces(text: str) -> str:
     return re.sub(r' +', ' ', text)
 
+def is_only_marker(text: str) -> bool:
+    return bool(re.fullmatch(INDECIPHERABLE_MARKER, text.strip()))
+
 def highlight_indecipherable(source: str, target: str) -> str:
-    source = collapse_spaces(source).strip()
-    target = collapse_spaces(target)
-    if "{" in target or "}" in target:
-        return target
-    if "{" not in source:
-        return target
-    parts = re.split(INDECIPHERABLE, source) # we expect {INDECIPHERABLE} in source
+    src = collapse_spaces(source).strip()
+    tgt = collapse_spaces(target).strip()
+    if "{" in tgt or "}" in tgt:
+        return tgt
+    if is_only_marker(src):
+        return f"{{{tgt}}}"
+    markers = re.findall(INDECIPHERABLE_MARKER, src)
+    if not markers:
+        return tgt
+    words_src = re.sub(r'[^\w\s]', '', src).split()
+    words_tgt = re.sub(r'[^\w\s]', '', tgt).split()
+    if len(markers) == 1:
+        # longest common prefix (by whole words)
+        i = 0
+        while i < len(words_src) and i < len(words_tgt) and words_src[i].lower() == words_tgt[i].lower():
+            i += 1
+        # longest common suffix
+        j = 0
+        while j < len(words_src) - i and j < len(words_tgt) - i and \
+              words_src[-1-j].lower() == words_tgt[-1-j].lower():
+            j += 1
+        if i == 0 and j == 0:
+            return tgt
+        # rebuild with original spacing and punctuation
+        tgt_words = tgt.split()
+        pre = " ".join(tgt_words[:i])
+        suf = " ".join(tgt_words[len(tgt_words)-j:]) if j > 0 else ""
+        mid = " ".join(tgt_words[i:len(tgt_words)-j or None])
+        if not mid:
+            return tgt
+        parts = []
+        if pre:
+            parts.append(pre)
+        parts.append(f"{{{mid}}}")
+        if suf:
+            parts.append(suf)
+        return " ".join(parts)
+    # fallback for multiple markers
+    parts = re.split(INDECIPHERABLE_MARKER, src)
     if len(parts) == 2 and not parts[0].strip() and not parts[1].strip():
-        return f"{{{target.strip()}}}"
+        return f"{{{tgt}}}"
     fixeds = [p.strip() for p in parts]
     pattern = "^" + "".join(
         re.escape(fixeds[i]) + "(.*?)"
         for i in range(len(fixeds) - 1)
     ) + re.escape(fixeds[-1]) + "$"
-    m = re.match(pattern, target.strip(), flags=re.DOTALL)
+    m = re.match(pattern, tgt, flags=re.DOTALL)
     if not m:
-        return f"{{{target.strip()}}}"
+        return f"{{{tgt}}}"
     groups = m.groups()
-    output = fixeds[0]
-    for i, hidden in enumerate(groups, start=1):
-        output += " {" + hidden.strip() + "} " + fixeds[i]
-    return output.strip()
+    out = fixeds[0]
+    for idx, hidden in enumerate(groups, start=1):
+        out += " {" + hidden.strip() + "} " + fixeds[idx]
+    return out.strip()
 
 def update_braced_transcripts(spreadsheet_path: str) -> None:
     wb = load_workbook(spreadsheet_path)
