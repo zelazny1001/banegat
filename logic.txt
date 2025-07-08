@@ -1,106 +1,69 @@
-# ground_truth_appender.py - append (or replace) GT column from given filename, seqNum on analysis worksheet
-import os
+# brace_the_transcript_using_gt.py - apply braces to transcript based on ground truth.
+from __future__ import annotations
+import re
 from openpyxl import load_workbook
+from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment
 
-OUTPUT_SPREADSHEET_ROOT_DIR = "j:/tmp/output_dir/"
-CONSOLIDATED_SPREADSHEET_NAME = "consolidated-for-bracing.xlsx"
-ANALYSIS_WORKSHEET = "analysis"
-INPUT_GT_ROOT_DIR = "j:/tmp/ground_truths/"
+SPREADSHEET_DIR = "j:/tmp/braces/"
+SPREADSHEET_LOCATION = SPREADSHEET_DIR + "test-braces.xlsx"
+WORKSHEET_NAME     = "Sheet1"
+INDECIPHERABLE     = r"(?i)\{INDECIPHERABLE\}"
 
-FILENAME_COL = "filename"
-SEQNUM_COL   = "seqNum"
-GROUND_TRUTH_COL = "GT"
+GROUND_TRUTH_COL = "ground_truth"
+TRANSCRIPT_COL   = "transcript"
+BRACED_COL       = "braced_transcript"
 
-def get_suffix_from_filename(filename: str, gt_root_dir: str) -> str:
-    candidates = sorted(
-        (fn for fn in os.listdir(gt_root_dir)
-         if fn.startswith("ground_truth_") and fn.endswith(".txt")),
-        key=lambda fn: len(fn[len("ground_truth_"):-4]),
-        reverse=True
-    )
-    for fn in candidates:
-        suffix = fn[len("ground_truth_"):-4]
-        if suffix in filename:
-            return suffix
-    return None
+def collapse_spaces(text: str) -> str:
+    return re.sub(r' +', ' ', text)
 
-def get_line_from_file(gt_root_dir: str, suffix: str, n: int) -> str:
-    path = os.path.join(gt_root_dir, f"ground_truth_{suffix}.txt")
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for i, line in enumerate(fh, start=1):
-                if i == n:
-                    return line.rstrip("\n")
-    except FileNotFoundError:
-        pass
-    return ""
+def highlight_indecipherable(source: str, target: str) -> str:
+    source = collapse_spaces(source).strip()
+    target = collapse_spaces(target)
+    if "{" in target or "}" in target:
+        return target
+    if "{" not in source:
+        return target
+    parts = re.split(INDECIPHERABLE, source) # we expect {INDECIPHERABLE} in source
+    if len(parts) == 2 and not parts[0].strip() and not parts[1].strip():
+        return f"{{{target.strip()}}}"
+    fixeds = [p.strip() for p in parts]
+    pattern = "^" + "".join(
+        re.escape(fixeds[i]) + "(.*?)"
+        for i in range(len(fixeds) - 1)
+    ) + re.escape(fixeds[-1]) + "$"
+    m = re.match(pattern, target.strip(), flags=re.DOTALL)
+    if not m:
+        return f"{{{target.strip()}}}"
+    groups = m.groups()
+    output = fixeds[0]
+    for i, hidden in enumerate(groups, start=1):
+        output += " {" + hidden.strip() + "} " + fixeds[i]
+    return output.strip()
 
-def check_seqnum_matches_file_length(gt_root_dir: str, suffix_max: dict):
-    for suffix, seq_max in suffix_max.items():
-        path = os.path.join(gt_root_dir, f"ground_truth_{suffix}.txt")
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                total_lines = sum(1 for _ in fh)
-            if total_lines != seq_max:
-                print(
-                    f"Warning for suffix '{suffix}': "
-                    f"max seqNum in sheet = {seq_max}, "
-                    f"but file has {total_lines} lines."
-                )
-        except FileNotFoundError:
-            print(f"Warning: GT file for suffix '{suffix}' not found at {path}")
+def update_braced_transcripts(spreadsheet_path: str) -> None:
+    wb = load_workbook(spreadsheet_path)
+    ws = wb[WORKSHEET_NAME]
+    headers = [cell.value for cell in ws[1]]
+    if BRACED_COL not in headers:
+        headers.append(BRACED_COL)
+        ws.cell(row=1, column=len(headers), value=BRACED_COL)
+    br_idx = headers.index(BRACED_COL) + 1
+    gt_idx = headers.index(GROUND_TRUTH_COL) + 1
+    tr_idx = headers.index(TRANSCRIPT_COL) + 1
 
-def main():
-    wb_path = os.path.join(OUTPUT_SPREADSHEET_ROOT_DIR, CONSOLIDATED_SPREADSHEET_NAME)
-    wb = load_workbook(wb_path)
-    ws = wb[ANALYSIS_WORKSHEET]
+    # set width and header styling for the braced_transcript column
+    col_letter = get_column_letter(br_idx)
+    ws.column_dimensions[col_letter].width = 60
+    ws.cell(row=1, column=br_idx).font = Font(name="Aptos", size=9, bold=True)
+    ws.cell(row=1, column=gt_idx).font = Font(name="Aptos", size=9, bold=True)
 
-    # find column indices
-    headers = {cell.value: idx+1 for idx, cell in enumerate(ws[1])}
-    fn_col  = headers[FILENAME_COL]
-    seq_col = headers[SEQNUM_COL]
-
-    # if GT already exists, reuse that column (and clear it); otherwise append at end
-    if GROUND_TRUTH_COL in headers:
-        gt_col = headers[GROUND_TRUTH_COL]
-        # clear old values (but keep header)
-        for row in range(2, ws.max_row+1):
-            ws.cell(row=row, column=gt_col, value=None)
-    else:
-        gt_col = ws.max_column + 1
-        ws.cell(row=1, column=gt_col, value=GROUND_TRUTH_COL)
-        col_letter = get_column_letter(gt_col)
-        ws.column_dimensions[col_letter].width = 60
-        hdr = ws.cell(row=1, column=gt_col)
-        hdr.font = Font(name="Aptos", size=9)
-        hdr.alignment = Alignment(horizontal="left")
-
-    # track max seqNum per suffix
-    suffix_max = {}
-
-    # fill (or refill) GT column
-    for row in range(2, ws.max_row+1):
-        filename = ws.cell(row=row, column=fn_col).value or ""
-        seqnum   = int(ws.cell(row=row, column=seq_col).value or 0)
-
-        suffix = get_suffix_from_filename(filename, INPUT_GT_ROOT_DIR)
-        if suffix:
-            suffix_max[suffix] = max(suffix_max.get(suffix, 0), seqnum)
-            gt_value = get_line_from_file(INPUT_GT_ROOT_DIR, suffix, seqnum)
-        else:
-            gt_value = ""
-
-        cell = ws.cell(row=row, column=gt_col, value=gt_value)
+    for r in range(2, ws.max_row + 1):
+        source = ws.cell(row=r, column=gt_idx).value or ""
+        target = ws.cell(row=r, column=tr_idx).value or ""
+        cell = ws.cell(row=r, column=br_idx, value=highlight_indecipherable(source, target))
         cell.font = Font(name="Aptos", size=9)
-        cell.alignment = Alignment(horizontal="left", wrap_text=True)
-
-    wb.save(wb_path)
-    check_seqnum_matches_file_length(INPUT_GT_ROOT_DIR, suffix_max)
-
+    wb.save(spreadsheet_path)
 
 if __name__ == "__main__":
-    print(f"Ground Truth Appender process started .....")
-    main()
-    print(f"... Ground Truth Appender process completed")
+    update_braced_transcripts(SPREADSHEET_LOCATION)
