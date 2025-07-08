@@ -1,5 +1,4 @@
-# ground_truth_appender.py - append GT column given filename, seqNum analysis worksheet
-
+# ground_truth_appender.py - append (or replace) GT column from given filename, seqNum on analysis worksheet
 import os
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -60,30 +59,35 @@ def main():
 
     # find column indices
     headers = {cell.value: idx+1 for idx, cell in enumerate(ws[1])}
-    fn_col = headers[FILENAME_COL]
+    fn_col  = headers[FILENAME_COL]
     seq_col = headers[SEQNUM_COL]
-    gt_col  = ws.max_column + 1
 
-    # create GT header
-    ws.cell(row=1, column=gt_col, value=GROUND_TRUTH_COL)
-    col_letter = get_column_letter(gt_col)
-    ws.column_dimensions[col_letter].width = 60
-    ws.cell(row=1, column=gt_col).font = Font(name="Aptos", size=9)
-    ws.cell(row=1, column=gt_col).alignment = Alignment(horizontal="left")
+    # if GT already exists, reuse that column (and clear it); otherwise append at end
+    if GROUND_TRUTH_COL in headers:
+        gt_col = headers[GROUND_TRUTH_COL]
+        # clear old values (but keep header)
+        for row in range(2, ws.max_row+1):
+            ws.cell(row=row, column=gt_col, value=None)
+    else:
+        gt_col = ws.max_column + 1
+        ws.cell(row=1, column=gt_col, value=GROUND_TRUTH_COL)
+        col_letter = get_column_letter(gt_col)
+        ws.column_dimensions[col_letter].width = 60
+        hdr = ws.cell(row=1, column=gt_col)
+        hdr.font = Font(name="Aptos", size=9)
+        hdr.alignment = Alignment(horizontal="left")
 
     # track max seqNum per suffix
     suffix_max = {}
 
-    # fill GT column
+    # fill (or refill) GT column
     for row in range(2, ws.max_row+1):
         filename = ws.cell(row=row, column=fn_col).value or ""
-        seqnum   = ws.cell(row=row, column=seq_col).value or 0
+        seqnum   = int(ws.cell(row=row, column=seq_col).value or 0)
 
         suffix = get_suffix_from_filename(filename, INPUT_GT_ROOT_DIR)
         if suffix:
-            # update max
             suffix_max[suffix] = max(suffix_max.get(suffix, 0), seqnum)
-
             gt_value = get_line_from_file(INPUT_GT_ROOT_DIR, suffix, seqnum)
         else:
             gt_value = ""
@@ -92,9 +96,9 @@ def main():
         cell.font = Font(name="Aptos", size=9)
         cell.alignment = Alignment(horizontal="left", wrap_text=True)
 
-    # save and then check
     wb.save(wb_path)
     check_seqnum_matches_file_length(INPUT_GT_ROOT_DIR, suffix_max)
+
 
 if __name__ == "__main__":
     print(f"Ground Truth Appender process started .....")
