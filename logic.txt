@@ -52,7 +52,10 @@ def update_braced_transcripts(spreadsheet_path: str) -> None:
     gt_idx = headers.index(GROUND_TRUTH_COL) + 1
     tr_idx = headers.index(TRANSCRIPT_COL) + 1
 
-    # set width and header styling for the braced_transcript column
+    first_col = get_column_letter(1)
+    last_col  = get_column_letter(ws.max_column)
+    ws.auto_filter.ref = f"{first_col}1:{last_col}{ws.max_row}"
+
     col_letter = get_column_letter(br_idx)
     ws.column_dimensions[col_letter].width = 60
     ws.cell(row=1, column=br_idx).font = Font(name="Aptos", size=9, bold=True)
