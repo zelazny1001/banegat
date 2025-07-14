@@ -1,0 +1,11 @@
+$file1 = Get-Content "file1.txt" -Raw
+$file2 = Get-Content "file2.txt" -Raw
+
+$words1 = $file1 -split '\s+'
+$words2 = $file2 -split '\s+'
+
+Compare-Object $words1 $words2 | Format-Table -AutoSize
+
+--------
+
+powershell -ExecutionPolicy Bypass -File compare_words.ps1
