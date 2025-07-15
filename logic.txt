@@ -32,7 +32,7 @@ ROOT_DIR = "j:/tmp/vad/synthetics/separate/"
 OUTPUT_DIR = "j:/tmp/vad/synthetics/both/"
 CUSTOMER_SUFFIX = "_Cust"
 AGENT_SUFFIX = "_Agent"
-WAV_EXTENSION = ".txt"
+WAV_EXTENSION = ".wav"
 
 def create_output_dir(output_dir):
     if not os.path.exists(output_dir):
@@ -60,6 +60,14 @@ def process_subdir(subdir_path, subdir_name, output_dir):
         src_path = os.path.join(subdir_path, agent_file)
         dest_path = os.path.join(output_dir, new_filename)
         shutil.copy(src_path, dest_path)
+
+def getEntityName(filename: str) -> str:
+    fname = os.path.basename(filename)
+    for suffix in (CUSTOMER_SUFFIX, AGENT_SUFFIX):
+        if suffix in fname:
+            id_part = fname[fname.index(suffix) + len(suffix): -len(WAV_EXTENSION)]
+            return f"{suffix.lstrip('_')}{id_part}"
+    return ""
 
 def main():
     create_output_dir(OUTPUT_DIR)
