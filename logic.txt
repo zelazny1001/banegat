@@ -17,4 +17,4 @@ powershell -ExecutionPolicy Bypass -File compare_words.ps1
 
 ---------
 
-(Get-Content "file.txt" -Raw) -split ' +', 0 | Where-Object { $_ -ne '' } | Measure-Object | Select-Object -ExpandProperty Count
+(Get-Content "gt.txt" -Raw) -split ' +', 0 | Where-Object { $_ -ne '' } | Measure-Object | Select-Object -ExpandProperty Count
