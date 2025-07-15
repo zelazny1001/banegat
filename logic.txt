@@ -18,3 +18,7 @@ powershell -ExecutionPolicy Bypass -File compare_words.ps1
 ---------
 
 (Get-Content "gt.txt" -Raw) -split ' +', 0 | Where-Object { $_ -ne '' } | Measure-Object | Select-Object -ExpandProperty Count
+
+----------
+
+=IF(A1="", 0, LEN(TRIM(A1)) - LEN(SUBSTITUTE(A1, " ", "")) + 1
