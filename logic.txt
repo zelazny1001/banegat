@@ -1,268 +1,194 @@
-# interleave3.py
+# interleave_agent_and_customer_calls.py
 
 import re
+from collections import defaultdict
 from openpyxl import load_workbook
 from openpyxl.styles import Font, numbers
 from openpyxl.utils import get_column_letter
-from collections import defaultdict
 
-# configuration
-SPREADSHEET_PATH = "j:/projects/sheet-logic/interleave-test3.xlsx"
-ANALYSIS_WORKSHEET = "analysis"
+SPREADSHEET_PATH     = "j:/projects/sheet-logic/interleave-test3.xlsx"
+ANALYSIS_WORKSHEET   = "analysis"
+OUTPUT_WORKSHEET     = "interleaved"
 
-# patterns for identifying calls
-AGENT_SUFFIX_PATTERN = r"_Agent_(\d+)[_-](\d+)"
+AGENT_LABEL             = "Agent"
+CUSTOMER_LABEL          = "Customer"
+AGENT_SUFFIX_PATTERN    = r"_Agent_(\d+)[_-](\d+)"
 CUSTOMER_SUFFIX_PATTERN = r"_Cust_(\d+)[_-](\d+)"
 
-# column names and their expected positions (1-based)
-COLUMNS = {
-    'filename': "filename",  # Column A (1)
-    'conditions': "conditions",  # Column B (2)
-    'seqNum': "seqNum",  # Column C (3)
-    'loc': "loc",  # Column D (4)
-    'dur': "dur",  # Column E (5)
-    'start': "start",  # Column F (6)
-    'end': "end",  # Column G (7)
-    'transcript': "transcript",  # Column H (8)
-    'call': "call",  # Will be added
-    'speaker': "speaker",  # Will be added
-    'call_transcript': "call_transcript"  # Will be added
-}
+FILENAME_COLUMN        = "filename"
+CONDITIONS_COLUMN      = "conditions"
+SEQNUM_COLUMN          = "seqNum"
+LOC_COLUMN             = "loc"
+DUR_COLUMN             = "dur"
+START_COLUMN           = "start"
+END_COLUMN             = "end"
+TRANSCRIPT_COLUMN      = "transcript"
 
-# column widths
-CALL_COLUMN_WIDTH = 12
+CALL_COLUMN            = "call"
+SPEAKER_COLUMN         = "speaker"
+CALL_TRANSCRIPT_COLUMN = "call_transcript"
+
+CALL_COLUMN_WIDTH    = 12
 SPEAKER_COLUMN_WIDTH = 12
 
-
-def format_numeric_columns(ws, idx_map):
-    # format numeric columns to correct types and number formats
-    if 'seqNum' in idx_map:
-        col = idx_map['seqNum']
-        for row in ws.iter_rows(min_row=2, min_col=col, max_col=col):
-            for cell in row:
-                if cell.value is not None:
-                    try:
-                        cell.value = int(float(cell.value))
-                        cell.number_format = numbers.FORMAT_NUMBER
-                    except (ValueError, TypeError):
-                        pass
-
-    if 'dur' in idx_map:
-        col = idx_map['dur']
-        for row in ws.iter_rows(min_row=2, min_col=col, max_col=col):
-            for cell in row:
-                if cell.value is not None:
-                    try:
-                        cell.value = float(cell.value)
-                        cell.number_format = '0.000'
-                    except (ValueError, TypeError):
-                        pass
-
-    for col_name in ['start', 'end']:
+def format_numeric_columns(worksheet, idx_map):
+    for col_name, (fmt, caster) in [
+        (SEQNUM_COLUMN, (numbers.FORMAT_NUMBER, lambda x: int(float(x)))),
+        (DUR_COLUMN,    ("0.000",             lambda x: float(x))),
+        (START_COLUMN,  (numbers.FORMAT_NUMBER, lambda x: int(float(x)))),
+        (END_COLUMN,    (numbers.FORMAT_NUMBER, lambda x: int(float(x))))
+    ]:
         if col_name in idx_map:
             col = idx_map[col_name]
-            for row in ws.iter_rows(min_row=2, min_col=col, max_col=col):
-                for cell in row:
-                    if cell.value is not None:
+            for cell in worksheet.iter_cols(min_col=col, max_col=col, min_row=2, values_only=False):
+                for c in cell:
+                    if c.value is not None:
                         try:
-                            cell.value = int(float(cell.value))
-                            cell.number_format = numbers.FORMAT_NUMBER
+                            c.value = caster(c.value)
+                            c.number_format = fmt
                         except (ValueError, TypeError):
                             pass
 
-
-def get_call_id(fn: str) -> str:
-    # extract call id from filename, handling empty/missing filenames
-    if not fn:
+def call_id_from_filename_suffix(filename: str) -> str:
+    if not filename:
         return ""
-
-    patterns = [
-        (AGENT_SUFFIX_PATTERN, lambda m: f"call_{m.group(1)}_{m.group(2)}"),
-        (CUSTOMER_SUFFIX_PATTERN, lambda m: f"call_{m.group(1)}_{m.group(2)}")
-    ]
-
-    for pattern, formatter in patterns:
-        m = re.search(pattern, str(fn))
+    for pattern in (AGENT_SUFFIX_PATTERN, CUSTOMER_SUFFIX_PATTERN):
+        m = re.search(pattern, str(filename))
         if m:
-            return formatter(m)
+            return f"call_{m.group(1)}_{m.group(2)}"
     return ""
 
-
-def get_speaker(fn: str) -> str:
-    # identify speaker type from filename, handling empty/missing filenames
-    if not fn:
+def get_speaker(filename: str) -> str:
+    if not filename:
         return ""
-    fn = str(fn)
-    return "Agent" if "_Agent_" in fn else "Customer" if "_Cust_" in fn else ""
+    filename = str(filename)
+    if "_Agent_" in filename:
+        return AGENT_LABEL
+    if "_Cust_" in filename:
+        return CUSTOMER_LABEL
+    return ""
 
-
-def load_sheet(path: str, sheet: str):
-    # load workbook and worksheet
+def load_worksheet(path: str, worksheet: str):
     wb = load_workbook(path)
-    return wb, wb[sheet]
+    if worksheet in wb.sheetnames:
+        return wb, wb[worksheet]
+    else:
+        return wb, wb.create_sheet(worksheet)
 
-
-def map_headers(ws) -> dict:
-    # map column headers to their indices
+def map_col_names_to_positions(worksheet) -> dict:
     headers = {}
-    for idx, cell in enumerate(ws[1], start=1):
-        if cell.value and isinstance(cell.value, str):
+    for idx, cell in enumerate(worksheet[1], start=1): # all cols in row 1 of the worksheet (the header)
+        if isinstance(cell.value, str):
             headers[cell.value.strip()] = idx
     return headers
 
-
-def read_records(ws, idx_map: dict) -> list:
-    # read and validate records from worksheet
+def read_records(worksheet, idx_map) -> list:
     records = []
-    for row_num in range(2, ws.max_row + 1):
-        # get required values using the mapped column positions
-        fn = ws.cell(row=row_num, column=idx_map[COLUMNS['filename']]).value
-        st = ws.cell(row=row_num, column=idx_map[COLUMNS['start']]).value
-        tr = ws.cell(row=row_num, column=idx_map[COLUMNS['transcript']]).value
-
-        # skip rows with missing required data
-        if st is None or tr is None:
+    for row in range(2, worksheet.max_row + 1):
+        filename = worksheet.cell(row=row, column=idx_map[FILENAME_COLUMN]).value
+        start = worksheet.cell(row=row, column=idx_map[START_COLUMN]).value
+        transcript = worksheet.cell(row=row, column=idx_map[TRANSCRIPT_COLUMN]).value
+        if start is None or transcript is None:
             continue
-
         try:
-            start_time = int(float(st))
+            start_time = int(float(start))
         except (ValueError, TypeError):
             continue
-
-        # get or calculate call id and speaker
-        call_id = get_call_id(fn)
-        speaker = get_speaker(fn)
-
+        call_id = call_id_from_filename_suffix(filename)
+        speaker = get_speaker(filename)
         if not call_id or not speaker:
             continue
-
         records.append({
-            "row": row_num,
+            "row": row,
             "call": call_id,
             "speaker": speaker,
             "start": start_time,
-            "transcript": tr,
-            "filename": fn,
-            "conditions": ws.cell(row=row_num, column=idx_map[COLUMNS['conditions']]).value,
-            "seqNum": ws.cell(row=row_num, column=idx_map[COLUMNS['seqNum']]).value,
-            "loc": ws.cell(row=row_num, column=idx_map[COLUMNS['loc']]).value,
-            "dur": ws.cell(row=row_num, column=idx_map[COLUMNS['dur']]).value,
-            "end": ws.cell(row=row_num, column=idx_map[COLUMNS['end']]).value
+            "transcript": transcript,
+            "filename": worksheet.cell(row=row, column=idx_map[FILENAME_COLUMN]).value,
+            "conditions": worksheet.cell(row=row, column=idx_map[CONDITIONS_COLUMN]).value,
+            "seqNum": worksheet.cell(row=row, column=idx_map[SEQNUM_COLUMN]).value,
+            "loc": worksheet.cell(row=row, column=idx_map[LOC_COLUMN]).value,
+            "dur": worksheet.cell(row=row, column=idx_map[DUR_COLUMN]).value,
+            "end": worksheet.cell(row=row, column=idx_map[END_COLUMN]).value
         })
-
     return records
 
-
 def group_and_sort_records(records):
-    # group records by call id and separate agents/customers
-    call_groups = defaultdict(lambda: {'agents': [], 'customers': []})
-
-    for record in records:
-        if record['speaker'] == 'Agent':
-            call_groups[record['call']]['agents'].append(record)
-        else:
-            call_groups[record['call']]['customers'].append(record)
-
-    # process each call group
+    call_groups = defaultdict(list)
+    for rec in records:
+        call_groups[rec[CALL_COLUMN]].append(rec)
     sorted_records = []
-    for call_id, groups in call_groups.items():
-        # combine and sort all utterances for this call
-        all_utterances = []
-
-        # add agent utterances with their original order
-        all_utterances.extend(groups['agents'])
-
-        # add customer utterances with their original order
-        all_utterances.extend(groups['customers'])
-
-        # sort by start time (customer first for ties)
-        all_utterances.sort(key=lambda r: (r['start'], 1 if r['speaker'] == 'Agent' else 0))
-
-        sorted_records.extend(all_utterances)
-
+    for call_id, recs in call_groups.items():
+        recs.sort(key=lambda r: (r[START_COLUMN], 1 if r[SPEAKER_COLUMN]==AGENT_LABEL else 0))
+        sorted_records.extend(recs)
     return sorted_records
 
+def create_output_worksheet(wb, src_ws, sorted_records, idx_map):
+    if OUTPUT_WORKSHEET in wb.sheetnames:
+        out_ws = wb[OUTPUT_WORKSHEET]
+        out_ws.delete_rows(1, out_ws.max_row)
+    else:
+        out_ws = wb.create_sheet(OUTPUT_WORKSHEET)
+    for name, col in idx_map.items():
+        out_ws.cell(row=1, column=col, value=name)
+    first_free = max(idx_map.values()) + 1
+    call_col = first_free
+    speaker_col = first_free + 1
+    ct_col = first_free + 2
+    out_ws.cell(row=1, column=call_col,    value=CALL_COLUMN)
+    out_ws.cell(row=1, column=speaker_col, value=SPEAKER_COLUMN)
+    out_ws.cell(row=1, column=ct_col,      value=CALL_TRANSCRIPT_COLUMN)
+    return out_ws, call_col, speaker_col, ct_col
 
-def apply_styling(ws, transcript_col: int, call_col: int, speaker_col: int, ct_col: int):
-    # apply consistent styling to columns
+def apply_styling(out_ws, src_ws, idx_map, call_col, speaker_col, ct_col):
     header_font = Font(name="Aptos", size=9, bold=True)
     data_font = Font(name="Aptos", size=9)
+    # copy widths for existing columns
+    for name, col in idx_map.items():
+        letter = get_column_letter(col)
+        out_ws.column_dimensions[letter].width = src_ws.column_dimensions[letter].width
+    out_ws.column_dimensions[get_column_letter(call_col)].width    = CALL_COLUMN_WIDTH
+    out_ws.column_dimensions[get_column_letter(speaker_col)].width = SPEAKER_COLUMN_WIDTH
+    # call_transcript width matches original transcript
+    tr_w = src_ws.column_dimensions[get_column_letter(idx_map[TRANSCRIPT_COLUMN])].width
+    out_ws.column_dimensions[get_column_letter(ct_col)].width = tr_w
 
-    # set column widths
-    if get_column_letter(transcript_col) in ws.column_dimensions:
-        transcript_width = ws.column_dimensions[get_column_letter(transcript_col)].width
-        ws.column_dimensions[get_column_letter(ct_col)].width = transcript_width
+    # apply fonts & freeze header row
+    last_col = max(ct_col, max(idx_map.values()))
+    for col in range(1, last_col + 1):
+        out_ws.cell(row=1, column=col).font = header_font
+        for r in range(2, out_ws.max_row + 1):
+            out_ws.cell(row=r, column=col).font = data_font
 
-    ws.column_dimensions[get_column_letter(call_col)].width = CALL_COLUMN_WIDTH
-    ws.column_dimensions[get_column_letter(speaker_col)].width = SPEAKER_COLUMN_WIDTH
-
-    # apply fonts
-    for col in (call_col, speaker_col, ct_col):
-        ws.cell(row=1, column=col).font = header_font
-        for row in range(2, ws.max_row + 1):
-            ws.cell(row=row, column=col).font = data_font
-
-    # set freeze panes and autofilter
-    last_col = max(transcript_col, call_col, speaker_col, ct_col)
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}{ws.max_row}"
-
+    out_ws.freeze_panes = "A2"
+    out_ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}{out_ws.max_row}"
 
 def interleave_calls():
-    # main function to process and interleave calls
-    try:
-        wb, ws = load_sheet(SPREADSHEET_PATH, ANALYSIS_WORKSHEET)
-        idx_map = map_headers(ws)
-
-        # format numeric columns first
-        format_numeric_columns(ws, idx_map)
-
-        # determine next available column if result columns don't exist
-        next_col = len(idx_map) + 1
-        call_col = idx_map.get(COLUMNS['call'], next_col)
-        speaker_col = idx_map.get(COLUMNS['speaker'], call_col + 1)
-        ct_col = idx_map.get(COLUMNS['call_transcript'], speaker_col + 1)
-
-        # create headers if columns don't exist
-        if COLUMNS['call'] not in idx_map:
-            ws.cell(row=1, column=call_col, value=COLUMNS['call'])
-        if COLUMNS['speaker'] not in idx_map:
-            ws.cell(row=1, column=speaker_col, value=COLUMNS['speaker'])
-        if COLUMNS['call_transcript'] not in idx_map:
-            ws.cell(row=1, column=ct_col, value=COLUMNS['call_transcript'])
-
-        records = read_records(ws, idx_map)
-        if not records:
-            print("no valid records found")
-            return
-
-        # group by call and sort utterances
-        sorted_records = group_and_sort_records(records)
-
-        # write sorted data
-        for idx, rec in enumerate(sorted_records, start=2):
-            # write original data (using mapped column positions)
-            ws.cell(row=idx, column=idx_map[COLUMNS['filename']], value=rec['filename'])
-            ws.cell(row=idx, column=idx_map[COLUMNS['conditions']], value=rec['conditions'])
-            ws.cell(row=idx, column=idx_map[COLUMNS['seqNum']], value=rec['seqNum'])
-            ws.cell(row=idx, column=idx_map[COLUMNS['loc']], value=rec['loc'])
-            ws.cell(row=idx, column=idx_map[COLUMNS['dur']], value=rec['dur'])
-            ws.cell(row=idx, column=idx_map[COLUMNS['start']], value=rec['start'])
-            ws.cell(row=idx, column=idx_map[COLUMNS['end']], value=rec['end'])
-            ws.cell(row=idx, column=idx_map[COLUMNS['transcript']], value=rec['transcript'])
-
-            # write new columns
-            ws.cell(row=idx, column=call_col, value=rec['call'])
-            ws.cell(row=idx, column=speaker_col, value=rec['speaker'])
-            ws.cell(row=idx, column=ct_col, value=rec['transcript'])
-
-        apply_styling(ws, idx_map[COLUMNS['transcript']], call_col, speaker_col, ct_col)
-        wb.save(SPREADSHEET_PATH)
-
-    except Exception as e:
-        print(f"error processing spreadsheet: {str(e)}")
-        raise
-
+    wb, src_ws = load_worksheet(SPREADSHEET_PATH, ANALYSIS_WORKSHEET)
+    idx_map = map_col_names_to_positions(src_ws)
+    format_numeric_columns(src_ws, idx_map)
+    records = read_records(src_ws, idx_map)
+    if not records:
+        print("no valid records found")
+        return
+    sorted_records = group_and_sort_records(records)
+    out_ws, call_col, speaker_col, ct_col = create_output_worksheet(
+        wb, src_ws, sorted_records, idx_map
+    )
+    for i, rec in enumerate(sorted_records, start=2):
+        out_ws.cell(row=i, column=idx_map[FILENAME_COLUMN],   value=rec['filename'])
+        out_ws.cell(row=i, column=idx_map[CONDITIONS_COLUMN], value=rec['conditions'])
+        out_ws.cell(row=i, column=idx_map[SEQNUM_COLUMN],     value=rec['seqNum'])
+        out_ws.cell(row=i, column=idx_map[LOC_COLUMN],        value=rec['loc'])
+        out_ws.cell(row=i, column=idx_map[DUR_COLUMN],        value=rec['dur'])
+        out_ws.cell(row=i, column=idx_map[START_COLUMN],      value=rec['start'])
+        out_ws.cell(row=i, column=idx_map[END_COLUMN],        value=rec['end'])
+        out_ws.cell(row=i, column=idx_map[TRANSCRIPT_COLUMN], value=rec['transcript'])
+        out_ws.cell(row=i, column=call_col,    value=rec['call'])
+        out_ws.cell(row=i, column=speaker_col, value=rec['speaker'])
+        out_ws.cell(row=i, column=ct_col,      value=rec['transcript'])
+    apply_styling(out_ws, src_ws, idx_map, call_col, speaker_col, ct_col)
+    wb.save(SPREADSHEET_PATH)
 
 if __name__ == "__main__":
     interleave_calls()
