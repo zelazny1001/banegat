@@ -1,0 +1,174 @@
+# interleave_agent_and_customer_calls.py
+
+import re
+from openpyxl import load_workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
+
+# configuration
+SPREADSHEET_PATH = "j:/projects/sheet-logic/interleave-test.xlsx"
+ANALYSIS_WORKSHEET = "analysis"
+
+# patterns for identifying calls
+AGENT_SUFFIX_PATTERN = r"_Agent_(\d+)[_-](\d+)"
+CUSTOMER_SUFFIX_PATTERN = r"_Cust_(\d+)[_-](\d+)"
+
+# column names
+COLUMNS = {
+    'filename': "filename",
+    'start': "start",
+    'transcript': "transcript",
+    'call': "call",
+    'speaker': "speaker",
+    'call_transcript': "call_transcript"
+}
+
+# column widths
+CALL_COLUMN_WIDTH = 12
+SPEAKER_COLUMN_WIDTH = 12
+
+
+def get_call_id(fn: str) -> str:
+    # extract call id from filename, handling empty/missing filenames
+    if not fn:
+        return ""
+
+    patterns = [
+        (AGENT_SUFFIX_PATTERN, lambda m: f"call_{m.group(1)}_{m.group(2)}"),
+        (CUSTOMER_SUFFIX_PATTERN, lambda m: f"call_{m.group(1)}_{m.group(2)}")
+    ]
+
+    for pattern, formatter in patterns:
+        m = re.search(pattern, str(fn))
+        if m:
+            return formatter(m)
+    return ""
+
+
+def get_speaker(fn: str) -> str:
+    # identify speaker type from filename, handling empty/missing filenames
+    if not fn:
+        return ""
+    fn = str(fn)
+    return "Agent" if "_Agent_" in fn else "Customer" if "_Cust_" in fn else ""
+
+
+def load_sheet(path: str, sheet: str):
+    # load workbook and worksheet
+    wb = load_workbook(path)
+    return wb, wb[sheet]
+
+
+def map_headers(ws) -> dict:
+    # map column headers to their indices
+    headers = {}
+    for idx, cell in enumerate(ws[1], start=1):
+        if cell.value and isinstance(cell.value, str):
+            headers[cell.value.strip()] = idx
+    return headers
+
+
+def read_records(ws, idx_map: dict) -> list:
+    # read and validate records from worksheet
+    records = []
+    for row_num in range(2, ws.max_row + 1):
+        # get required values
+        fn = ws.cell(row=row_num, column=idx_map.get(COLUMNS['filename'], 1)).value
+        st = ws.cell(row=row_num, column=idx_map.get(COLUMNS['start'], 2)).value
+        tr = ws.cell(row=row_num, column=idx_map.get(COLUMNS['transcript'], 3)).value
+
+        # skip rows with missing required data
+        if st is None or tr is None:
+            continue
+
+        try:
+            start_time = int(st)
+        except (ValueError, TypeError):
+            continue
+
+        # get or calculate call id and speaker
+        call_id = get_call_id(fn)
+        speaker = get_speaker(fn)
+
+        if not call_id or not speaker:
+            continue
+
+        records.append({
+            "row": row_num,
+            "call": call_id,
+            "speaker": speaker,
+            "start": start_time,
+            "transcript": tr
+        })
+
+    return records
+
+
+def apply_styling(ws, transcript_col: int, call_col: int, speaker_col: int, ct_col: int):
+    # apply consistent styling to columns
+    header_font = Font(name="Aptos", size=9, bold=True)
+    data_font = Font(name="Aptos", size=9)
+
+    # set column widths
+    if get_column_letter(transcript_col) in ws.column_dimensions:
+        transcript_width = ws.column_dimensions[get_column_letter(transcript_col)].width
+        ws.column_dimensions[get_column_letter(ct_col)].width = transcript_width
+
+    ws.column_dimensions[get_column_letter(call_col)].width = CALL_COLUMN_WIDTH
+    ws.column_dimensions[get_column_letter(speaker_col)].width = SPEAKER_COLUMN_WIDTH
+
+    # apply fonts
+    for col in (call_col, speaker_col, ct_col):
+        ws.cell(row=1, column=col).font = header_font
+        for row in range(2, ws.max_row + 1):
+            ws.cell(row=row, column=col).font = data_font
+
+    # set freeze panes and autofilter
+    last_col = max(transcript_col, call_col, speaker_col, ct_col)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}{ws.max_row}"
+
+
+def interleave_calls():
+    # main function to process and interleave calls
+    try:
+        wb, ws = load_sheet(SPREADSHEET_PATH, ANALYSIS_WORKSHEET)
+        idx_map = map_headers(ws)
+
+        # determine next available column if result columns don't exist
+        next_col = len(idx_map) + 1
+        call_col = idx_map.get(COLUMNS['call'], next_col)
+        speaker_col = idx_map.get(COLUMNS['speaker'], call_col + 1)
+        ct_col = idx_map.get(COLUMNS['call_transcript'], speaker_col + 1)
+
+        # create headers if columns don't exist
+        if COLUMNS['call'] not in idx_map:
+            ws.cell(row=1, column=call_col, value=COLUMNS['call'])
+        if COLUMNS['speaker'] not in idx_map:
+            ws.cell(row=1, column=speaker_col, value=COLUMNS['speaker'])
+        if COLUMNS['call_transcript'] not in idx_map:
+            ws.cell(row=1, column=ct_col, value=COLUMNS['call_transcript'])
+
+        records = read_records(ws, idx_map)
+        if not records:
+            print("no valid records found")
+            return
+
+        # sort with customer first for same start times
+        records.sort(key=lambda r: (r["call"], r["start"], 1 if r["speaker"] == "Agent" else 0))
+
+        # write sorted data
+        for idx, rec in enumerate(records, start=2):
+            ws.cell(row=idx, column=call_col, value=rec["call"])
+            ws.cell(row=idx, column=speaker_col, value=rec["speaker"])
+            ws.cell(row=idx, column=ct_col, value=rec["transcript"])
+
+        apply_styling(ws, idx_map[COLUMNS['transcript']], call_col, speaker_col, ct_col)
+        wb.save(SPREADSHEET_PATH)
+
+    except Exception as e:
+        print(f"error processing spreadsheet: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    interleave_calls()
