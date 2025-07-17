@@ -2,7 +2,7 @@
 
 import re
 from openpyxl import load_workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, numbers
 from openpyxl.utils import get_column_letter
 
 # configuration
@@ -20,13 +20,57 @@ COLUMNS = {
     'transcript': "transcript",
     'call': "call",
     'speaker': "speaker",
-    'call_transcript': "call_transcript"
+    'call_transcript': "call_transcript",
+    'seqNum': "seqNum",
+    'dur': "dur",
+    'end': "end"
 }
 
 # column widths
 CALL_COLUMN_WIDTH = 12
 SPEAKER_COLUMN_WIDTH = 12
 
+def format_numeric_columns(ws, idx_map):
+    # format numeric columns to correct types and styles
+    if 'seqNum' in idx_map:
+        for row in ws.iter_rows(min_row=2, min_col=idx_map['seqNum'], max_col=idx_map['seqNum']):
+            for cell in row:
+                if cell.value is not None:
+                    try:
+                        cell.value = int(cell.value)
+                        cell.number_format = numbers.FORMAT_NUMBER
+                    except (ValueError, TypeError):
+                        pass
+
+    if 'dur' in idx_map:
+        for row in ws.iter_rows(min_row=2, min_col=idx_map['dur'], max_col=idx_map['dur']):
+            for cell in row:
+                if cell.value is not None:
+                    try:
+                        cell.value = float(cell.value)
+                        cell.number_format = numbers.FORMAT_NUMBER_00
+                    except (ValueError, TypeError):
+                        pass
+
+    if 'start' in idx_map:
+        for row in ws.iter_rows(min_row=2, min_col=idx_map['start'], max_col=idx_map['start']):
+            for cell in row:
+                if cell.value is not None:
+                    try:
+                        cell.value = int(cell.value)
+                        cell.number_format = numbers.FORMAT_NUMBER
+                    except (ValueError, TypeError):
+                        pass
+
+    if 'end' in idx_map:
+        for row in ws.iter_rows(min_row=2, min_col=idx_map['end'], max_col=idx_map['end']):
+            for cell in row:
+                if cell.value is not None:
+                    try:
+                        cell.value = int(cell.value)
+                        cell.number_format = numbers.FORMAT_NUMBER
+                    except (ValueError, TypeError):
+                        pass
 
 def get_call_id(fn: str) -> str:
     # extract call id from filename, handling empty/missing filenames
@@ -128,12 +172,14 @@ def apply_styling(ws, transcript_col: int, call_col: int, speaker_col: int, ct_c
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(last_col)}{ws.max_row}"
 
-
 def interleave_calls():
     # main function to process and interleave calls
     try:
         wb, ws = load_sheet(SPREADSHEET_PATH, ANALYSIS_WORKSHEET)
         idx_map = map_headers(ws)
+
+        # format numeric columns first
+        format_numeric_columns(ws, idx_map)
 
         # determine next available column if result columns don't exist
         next_col = len(idx_map) + 1
