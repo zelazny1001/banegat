@@ -35,10 +35,9 @@ def extract_ground_truths(worksheet, column_groups: List[Tuple[int, int, int]]) 
     return ground_truths
 
 def generate_output_filename(input_filename: str) -> str:
-    if not input_filename.startswith("Synthetic_Call_"):
-        raise ValueError(f"Unexpected filename format: {input_filename}")
-    suffix = input_filename[len("Synthetic_Call_"):]
-    return f"ground_truth_call_{suffix}.txt"
+    core = input_filename[len("Synthetic_Call_"):]
+    core = core[: -len("_Combined")]
+    return f"ground_truth_call_{core}.txt"
 
 def write_ground_truth_files(ground_truths: Dict[str, List[str]], output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
