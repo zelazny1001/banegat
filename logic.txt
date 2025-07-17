@@ -26,7 +26,6 @@ TRANSCRIPT_COLUMN      = "transcript"
 
 CALL_COLUMN            = "call"
 SPEAKER_COLUMN         = "speaker"
-CALL_TRANSCRIPT_COLUMN = "call_transcript"
 
 CALL_COLUMN_WIDTH    = 12
 SPEAKER_COLUMN_WIDTH = 12
@@ -134,13 +133,11 @@ def create_output_worksheet(wb, src_ws, sorted_records, idx_map):
     first_free = max(idx_map.values()) + 1
     call_col = first_free
     speaker_col = first_free + 1
-    ct_col = first_free + 2
     out_ws.cell(row=1, column=call_col,    value=CALL_COLUMN)
     out_ws.cell(row=1, column=speaker_col, value=SPEAKER_COLUMN)
-    out_ws.cell(row=1, column=ct_col,      value=CALL_TRANSCRIPT_COLUMN)
-    return out_ws, call_col, speaker_col, ct_col
+    return out_ws, call_col, speaker_col
 
-def apply_styling(out_ws, src_ws, idx_map, call_col, speaker_col, ct_col):
+def apply_styling(out_ws, src_ws, idx_map, call_col, speaker_col):
     header_font = Font(name="Aptos", size=9, bold=True)
     data_font = Font(name="Aptos", size=9)
     # copy widths for existing columns
@@ -149,12 +146,9 @@ def apply_styling(out_ws, src_ws, idx_map, call_col, speaker_col, ct_col):
         out_ws.column_dimensions[letter].width = src_ws.column_dimensions[letter].width
     out_ws.column_dimensions[get_column_letter(call_col)].width    = CALL_COLUMN_WIDTH
     out_ws.column_dimensions[get_column_letter(speaker_col)].width = SPEAKER_COLUMN_WIDTH
-    # call_transcript width matches original transcript
-    tr_w = src_ws.column_dimensions[get_column_letter(idx_map[TRANSCRIPT_COLUMN])].width
-    out_ws.column_dimensions[get_column_letter(ct_col)].width = tr_w
 
     # apply fonts & freeze header row
-    last_col = max(ct_col, max(idx_map.values()))
+    last_col = max(speaker_col, max(idx_map.values()))
     for col in range(1, last_col + 1):
         out_ws.cell(row=1, column=col).font = header_font
         for r in range(2, out_ws.max_row + 1):
@@ -172,7 +166,7 @@ def interleave_calls():
         print("no valid records found")
         return
     sorted_records = group_and_sort_records(records)
-    out_ws, call_col, speaker_col, ct_col = create_output_worksheet(
+    out_ws, call_col, speaker_col = create_output_worksheet(
         wb, src_ws, sorted_records, idx_map
     )
     for i, rec in enumerate(sorted_records, start=2):
@@ -186,8 +180,7 @@ def interleave_calls():
         out_ws.cell(row=i, column=idx_map[TRANSCRIPT_COLUMN], value=rec['transcript'])
         out_ws.cell(row=i, column=call_col,    value=rec['call'])
         out_ws.cell(row=i, column=speaker_col, value=rec['speaker'])
-        out_ws.cell(row=i, column=ct_col,      value=rec['transcript'])
-    apply_styling(out_ws, src_ws, idx_map, call_col, speaker_col, ct_col)
+    apply_styling(out_ws, src_ws, idx_map, call_col, speaker_col)
     wb.save(SPREADSHEET_PATH)
 
 if __name__ == "__main__":
