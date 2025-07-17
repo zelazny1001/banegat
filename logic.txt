@@ -1,0 +1,68 @@
+# extract_gt_from_column_format.py
+
+from __future__ import annotations
+import os
+import openpyxl
+from typing import List, Dict, Tuple
+
+SPREADSHEET_PATH = "j:/projects/sheet-logic/ground-truths/gt-format.xlsx"
+OUTPUT_DIRECTORY = "j:/projects/sheet-logic/ground-truths/"
+
+def get_column_groups(worksheet) -> List[Tuple[int, int, int]]:
+    column_groups = []
+    for col in range(1, worksheet.max_column + 1):
+        cell_value = worksheet.cell(row=1, column=col).value
+        if cell_value == "Filename":
+            if (worksheet.cell(row=1, column=col + 1).value == "whisper_transcription" and
+                    worksheet.cell(row=1, column=col + 2).value == "ground_truth"):
+                column_groups.append((col, col + 1, col + 2))
+    return column_groups
+
+def extract_ground_truths(worksheet, column_groups: List[Tuple[int, int, int]]) -> Dict[str, List[str]]:
+    ground_truths = {}
+    for group in column_groups:
+        filename_col, _, gt_col = group
+        current_filename = None
+        for row in range(2, worksheet.max_row + 1):
+            filename_cell = worksheet.cell(row=row, column=filename_col).value
+            if filename_cell and filename_cell.startswith("Synthetic_Call_"):
+                current_filename = filename_cell
+                if current_filename not in ground_truths:
+                    ground_truths[current_filename] = []
+            gt_text = worksheet.cell(row=row, column=gt_col).value
+            if current_filename and gt_text and isinstance(gt_text, str):
+                ground_truths[current_filename].append(gt_text.strip())
+    return ground_truths
+
+def generate_output_filename(input_filename: str) -> str:
+    if not input_filename.startswith("Synthetic_Call_"):
+        raise ValueError(f"Unexpected filename format: {input_filename}")
+    suffix = input_filename[len("Synthetic_Call_"):]
+    return f"ground_truth_call_{suffix}.txt"
+
+def write_ground_truth_files(ground_truths: Dict[str, List[str]], output_dir: str):
+    os.makedirs(output_dir, exist_ok=True)
+    for filename, lines in ground_truths.items():
+        output_filename = generate_output_filename(filename)
+        output_path = os.path.join(output_dir, output_filename)
+        combined_text = ' '.join(lines)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(combined_text)
+        print(f"Created file: {output_path}")
+
+def process_spreadsheet(spreadsheet_path: str, output_directory: str):
+    workbook = openpyxl.load_workbook(spreadsheet_path)
+    worksheet = workbook.active
+    column_groups = get_column_groups(worksheet)
+    if not column_groups:
+        print("No valid column groups found in the spreadsheet.")
+        return
+    ground_truths = extract_ground_truths(worksheet, column_groups)
+    write_ground_truth_files(ground_truths, output_directory)
+    print(f"Processed {len(ground_truths)} files.")
+
+def main():
+    process_spreadsheet(SPREADSHEET_PATH, OUTPUT_DIRECTORY)
+
+if __name__ == "__main__":
+    main()
