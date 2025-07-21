@@ -1,4 +1,53 @@
-from importlib.metadata import distributions
+# batch_file_rename.py - bulk rename files in a directory
 
-for dist in distributions():
-    print(f"{dist.metadata['Name']}=={dist.version}")
+import os
+import re
+
+DIRECTORY_LOCATION = "j:/projects/combined-dir/"
+PREFIX = "Synthetic_Call_"
+POSTFIX = "Combined"
+EXTENSION = ".txt"
+
+def extract_file_components(filename):
+    pattern = rf"{PREFIX}(\d+)_(\d+)_{POSTFIX}(-2)?\{EXTENSION}"
+    match = re.fullmatch(pattern, filename)
+    if not match:
+        return None
+    x, y, agent_flag = match.groups()
+    file_type = "Agent" if agent_flag else "Cust"
+    return (x, y, file_type)
+
+def generate_new_filename(x, y, file_type):
+    return f"{PREFIX}{file_type}_{x}_{y}{EXTENSION}"
+
+def rename_file(old_filename):
+    components = extract_file_components(old_filename)
+    if not components:
+        return False
+    x, y, file_type = components
+    new_filename = generate_new_filename(x, y, file_type)
+    old_path = os.path.join(DIRECTORY_LOCATION, old_filename)
+    new_path = os.path.join(DIRECTORY_LOCATION, new_filename)
+    try:
+        os.rename(old_path, new_path)
+        print(f"Renamed: {old_filename} -> {new_filename}")
+        return True
+    except OSError as e:
+        print(f"Error renaming {old_filename}: {e}")
+        return False
+
+def process_directory():
+    files = os.listdir(DIRECTORY_LOCATION)
+    renamed_count = 0
+    for filename in files:
+        if filename.startswith(PREFIX) and POSTFIX in filename and filename.endswith(EXTENSION):
+            if rename_file(filename):
+                renamed_count += 1
+    print(f"Process complete. Renamed {renamed_count} files.")
+
+def main():
+    print("Starting file renaming process...")
+    process_directory()
+
+if __name__ == "__main__":
+    main()
