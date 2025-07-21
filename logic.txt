@@ -51,3 +51,71 @@ def main():
 
 if __name__ == "__main__":
     main()
+	
+==============
+
+0..74 | ForEach-Object { New-Item -ItemType Directory -Path "C:\output\split_$_" }
+
+==============
+
+SelectAll
+
+Shortcut: Ctrl+A (Windows) / Cmd+A (Mac).
+
+SplitStereoToMono
+
+Location: Tracks → Mixer → Split Stereo to Mono.
+
+SetProject
+
+Parameters:
+
+Folder: C:\output\split_$n
+
+Export2
+
+Parameters:
+
+Filename: temp.wav
+
+Number of Channels: 1
+
+===============
+
+import os
+import shutil
+
+# Config
+input_dir = "C:/path/to/exports"  # Folder containing temp_0.wav, temp_1.wav, etc.
+output_dir = "C:/final_output"    # Renamed files will go here
+os.makedirs(output_dir, exist_ok=True)  # Create output dir if it doesn't exist
+
+# Get all temp files and sort them numerically (temp_0.wav, temp_1.wav, temp_0-1.wav, etc.)
+temp_files = sorted(
+    [f for f in os.listdir(input_dir) if f.startswith("temp_")],
+    key=lambda x: [int(x.split('_')[1].split('.')[0].split('-')[0]), 
+                   int(x.split('-')[1].split('.')[0]) if '-' in x else 0]
+)
+
+# Rename pairs (L/R) to match original files
+for i in range(0, len(temp_files), 2):
+    # Calculate original x and y indices (0_1 to 7_5)
+    file_num = i // 2  # 0 to 74 (for 75 files)
+    x = file_num // 5  # 0 to 7 (since y ranges 1-5)
+    y = (file_num % 5) + 1  # 1 to 5
+    
+    # Source paths (left and right channels)
+    left_src = os.path.join(input_dir, temp_files[i])
+    right_src = os.path.join(input_dir, temp_files[i+1])
+    
+    # Destination paths
+    left_dest = os.path.join(output_dir, f"Synthetic_Call_{x}_{y}_Combined_L.wav")
+    right_dest = os.path.join(output_dir, f"Synthetic_Call_{x}_{y}_Combined_R.wav")
+    
+    # Rename and move
+    shutil.move(left_src, left_dest)
+    shutil.move(right_src, right_dest)
+    print(f"Renamed: {temp_files[i]} -> Synthetic_Call_{x}_{y}_Combined_L.wav")
+    print(f"Renamed: {temp_files[i+1]} -> Synthetic_Call_{x}_{y}_Combined_R.wav")
+
+print(f"\nDone! Renamed {len(temp_files)} files (75 stereo -> 150 mono). Output in: {output_dir}")
