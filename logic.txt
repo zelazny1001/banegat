@@ -1,4 +1,4 @@
-# upsert_wer_interleaved_worksheet.py
+# upsert_wer_worksheet_for_interleaved_utterances.py - update or insert WER worksheet for interleaved call utterances
 
 import os
 import httpx
@@ -6,21 +6,23 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
-SPREADSHEET_DIRECTORY = "j:/projects/sheet-logic/"
-SPREADSHEET_FILENAME = "wer-interleaved-test.xlsx"
+SPREADSHEET_DIR = "j:/projects/sheet-logic/"
+SPREADSHEET_NAME = "wer-interleaved-test.xlsx"
 INTERLEAVED_WORKSHEET = "interleaved"
 WER_WORKSHEET = "WER-interleaved"
 GT_LOCATION = "j:/projects/sheet-logic/ground-truths/"
 WER_ENDPOINT = "http://api_for_wer:2517/wer"
 WER_ENDPOINT_TIMEOUT = 3
 
+# order of columns on WER-interleaved worksheet
 CALL_COLUMN = "call"
 CONDITIONS_COLUMN = "conditions"
 TRANSCRIPT_COLUMN = "transcript"
 GT_COLUMN = "GT"
 WER_COLUMN = "WER"
 
-COLUMN_MAPPING = {
+# mapping of column indices on WER-interleaved worksheet
+INTERLEAVED_WER_WORKSHEET_COLUMN_MAPPING = {
     CALL_COLUMN: 1,
     CONDITIONS_COLUMN: 2,
     TRANSCRIPT_COLUMN: 3,
@@ -28,9 +30,8 @@ COLUMN_MAPPING = {
     WER_COLUMN: 5
 }
 
-
 def load_interleaved_data():
-    workbook_path = os.path.join(SPREADSHEET_DIRECTORY, SPREADSHEET_FILENAME)
+    workbook_path = os.path.join(SPREADSHEET_DIR, SPREADSHEET_NAME)
     workbook = load_workbook(workbook_path)
     worksheet = workbook[INTERLEAVED_WORKSHEET]
     data = []
@@ -39,9 +40,8 @@ def load_interleaved_data():
         data.append(dict(zip(headers, row)))
     return data
 
-
 def create_or_replace_worksheet():
-    workbook_path = os.path.join(SPREADSHEET_DIRECTORY, SPREADSHEET_FILENAME)
+    workbook_path = os.path.join(SPREADSHEET_DIR, SPREADSHEET_NAME)
     workbook = load_workbook(workbook_path)
     if WER_WORKSHEET in workbook.sheetnames:
         workbook.remove(workbook[WER_WORKSHEET])
@@ -55,8 +55,8 @@ def group_interleaved_data(interleaved_data):
         conditions = row[CONDITIONS_COLUMN]
         transcript = row[TRANSCRIPT_COLUMN]
         if call not in grouped:
-            grouped[call] = {"conditions": conditions, "transcripts": []}
-        grouped[call]["transcripts"].append(transcript)
+            grouped[call] = {f"{CONDITIONS_COLUMN}": conditions, f"{TRANSCRIPT_COLUMN}": []}
+        grouped[call][f"{TRANSCRIPT_COLUMN}"].append(transcript)
     return grouped
 
 def get_ground_truth_text(call):
@@ -73,7 +73,7 @@ def calculate_wer(ground_truth, transcript):
         return float("100.00")
     try:
         resp = httpx.post(WER_ENDPOINT,
-                          json={"groundTruth": ground_truth, "transcript": transcript},
+                          json={"groundTruth": ground_truth, f"{TRANSCRIPT_COLUMN}": transcript},
                           timeout=WER_ENDPOINT_TIMEOUT)
         text = resp.text.strip()
         value = float(text)
@@ -81,23 +81,21 @@ def calculate_wer(ground_truth, transcript):
     except (ValueError, httpx.RequestError):
         return "WER API Error"
 
-
 def populate_wer_interleaved_worksheet(grouped_data):
-    workbook_path = os.path.join(SPREADSHEET_DIRECTORY, SPREADSHEET_FILENAME)
+    workbook_path = os.path.join(SPREADSHEET_DIR, SPREADSHEET_NAME)
     workbook = load_workbook(workbook_path)
     worksheet = workbook[WER_WORKSHEET]
 
     worksheet.append([CALL_COLUMN, CONDITIONS_COLUMN, TRANSCRIPT_COLUMN, GT_COLUMN, WER_COLUMN])
 
     for call, data in grouped_data.items():
-        transcript = " ".join(data["transcripts"])
+        transcript = " ".join(data[f"{TRANSCRIPT_COLUMN}"])
         gt_text = get_ground_truth_text(call)
         wer_value = calculate_wer(gt_text, transcript)
-        worksheet.append([call, data["conditions"], transcript, gt_text, wer_value])
+        worksheet.append([call, data[f"{CONDITIONS_COLUMN}"], transcript, gt_text, wer_value])
 
     apply_worksheet_styling(workbook, worksheet)
     workbook.save(workbook_path)
-
 
 def apply_worksheet_styling(workbook, worksheet):
     aptos_font = Font(name="Aptos", size=9)
@@ -122,12 +120,11 @@ def apply_worksheet_styling(workbook, worksheet):
         [cell.value for cell in interleaved_worksheet[1]].index(CONDITIONS_COLUMN) + 1
     )].width
 
-    worksheet.column_dimensions[get_column_letter(COLUMN_MAPPING[CALL_COLUMN])].width = call_width
-    worksheet.column_dimensions[get_column_letter(COLUMN_MAPPING[CONDITIONS_COLUMN])].width = conditions_width
-    worksheet.column_dimensions[get_column_letter(COLUMN_MAPPING[TRANSCRIPT_COLUMN])].width = transcript_width
-    worksheet.column_dimensions[get_column_letter(COLUMN_MAPPING[GT_COLUMN])].width = transcript_width
-    worksheet.column_dimensions[get_column_letter(COLUMN_MAPPING[WER_COLUMN])].width = 7
-
+    worksheet.column_dimensions[get_column_letter(INTERLEAVED_WER_WORKSHEET_COLUMN_MAPPING[CALL_COLUMN])].width = call_width
+    worksheet.column_dimensions[get_column_letter(INTERLEAVED_WER_WORKSHEET_COLUMN_MAPPING[CONDITIONS_COLUMN])].width = conditions_width
+    worksheet.column_dimensions[get_column_letter(INTERLEAVED_WER_WORKSHEET_COLUMN_MAPPING[TRANSCRIPT_COLUMN])].width = transcript_width
+    worksheet.column_dimensions[get_column_letter(INTERLEAVED_WER_WORKSHEET_COLUMN_MAPPING[GT_COLUMN])].width = transcript_width
+    worksheet.column_dimensions[get_column_letter(INTERLEAVED_WER_WORKSHEET_COLUMN_MAPPING[WER_COLUMN])].width = 7
 
 def process_wer_interleaved():
     create_or_replace_worksheet()
