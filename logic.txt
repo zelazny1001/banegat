@@ -1,0 +1,45 @@
+# create_separated_gt_from_interleaved_agent_cust.py - from interleaved excel GT:
+# create separate agent and customer ground truth files
+
+import os
+from openpyxl import load_workbook
+
+INTERLEAVED_SPREADSHEETS_DIR = "j:/projects/sheet-logic/interleaved_gt/"
+SPEAKER_SEPARATED_GT_DIR = "j:/projects/sheet-logic/ground_truths_spkr_sep_nl/"
+
+def list_spreadsheets(directory):
+    return [f for f in os.listdir(directory) if f.endswith(".xlsx")]
+
+def ensure_output_dir(path):
+    os.makedirs(path, exist_ok=True)
+
+def process_worksheet(worksheet, output_dir):
+    headers = next(worksheet.values)
+    gt_idx = headers.index("GT")
+    spkr_idx = headers.index("speaker GT")
+    groups = {"Agent": [], "Customer": []}
+    for row in worksheet.iter_rows(min_row=2, values_only=True):
+        val = row[gt_idx]
+        spkr = row[spkr_idx]
+        if spkr in groups and val is not None:
+            groups[spkr].append(str(val))
+    label = worksheet.title
+    for spkr, lines in groups.items():
+        spkr_tag = "Agent" if spkr == "Agent" else "Cust"
+        filename = f"ground_truth_{spkr_tag}_call_{label}.txt"
+        path = os.path.join(output_dir, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+def process_spreadsheet(path, input_dir, output_dir):
+    wb = load_workbook(os.path.join(input_dir, path), read_only=True)
+    for ws in wb.worksheets:
+        process_worksheet(ws, output_dir)
+
+def main():
+    ensure_output_dir(SPEAKER_SEPARATED_GT_DIR)
+    for sheet in list_spreadsheets(INTERLEAVED_SPREADSHEETS_DIR):
+        process_spreadsheet(sheet, INTERLEAVED_SPREADSHEETS_DIR, SPEAKER_SEPARATED_GT_DIR)
+
+if __name__ == "__main__":
+    main()
