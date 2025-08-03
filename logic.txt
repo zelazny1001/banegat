@@ -1,5 +1,311 @@
-def get_speaker_label(filename: str) -> str:
-    name = os.path.basename(filename)
-    core = name[len(GT_PREFIX):-4]
-    label, spkr_tag = core.rsplit("_", 1)
-    return f"{spkr_tag}_{label}"
+# nltk_jiwer_utils.py - library version based on jiwer 3.0.0, can be used by clients
+
+from __future__ import annotations
+import unicodedata
+import string
+from nltk import edit_distance
+from jiwer import process_words, compute_measures
+
+def strip_accents(s: str) -> str:
+    return ''.join(c for c in unicodedata.normalize('NFD', s)
+                   if unicodedata.category(c) != 'Mn' and ord(c) <= 122)
+
+def normalize_string(s: str) -> list[str]:
+    s = strip_accents(s.lower().translate(str.maketrans('', '', string.punctuation)))
+    tokens = s.split()
+    normalized: list[str] = []
+    for token in tokens:
+        if token == 'okay':
+            normalized.append('ok')
+        elif token in ['yeah', 'yea', 'ya', 'yep', 'yup', 'yes']:
+            normalized.append('yeah')
+        elif token == 'cuz':
+            normalized.append('because')
+        elif token.isupper() or token in ['uh-huh', 'uhuh', 'uh', 'huh', 'um', 'hm', 'umm', 'hmm']:
+            continue
+        else:
+            normalized.append(token)
+    return normalized
+
+def get_nltk_result(gt: str, hyp: str) -> dict:
+    ref_tokens = normalize_string(gt)
+    hyp_tokens = normalize_string(hyp)
+    if not ref_tokens:
+        wer = 0.0 if not hyp_tokens else 1.0
+        return {
+            "wer": round(wer, 2),
+            "substitutions": 0,
+            "deletions": 0,
+            "insertions": len(hyp_tokens),
+            "references": 0,
+            "hypothesis": len(hyp_tokens),
+            "alignment": []
+        }
+    ed = edit_distance(ref_tokens, hyp_tokens)
+    return {
+        "wer": round(min(1.0, ed / len(ref_tokens)), 2),
+        "substitutions": "",
+        "deletions": "",
+        "insertions": "",
+        "references": len(ref_tokens),
+        "hypothesis": len(hyp_tokens),
+        "alignment": []
+    }
+
+def get_jiwer_result(gt: str, hyp: str) -> dict:
+    ref_tokens = normalize_string(gt)
+    hyp_tokens = normalize_string(hyp)
+    ref_str = " ".join(ref_tokens)
+    hyp_str = " ".join(hyp_tokens)
+
+    measures = compute_measures(ref_str, hyp_str)
+    alignment = process_words(ref_str, hyp_str)
+
+    aligned_output = []
+    for group in alignment.alignments:
+        for chunk in group:
+            try:
+                op = chunk.type
+                ref_segment = ref_tokens[chunk.ref_start_idx:chunk.ref_end_idx]
+                hyp_segment = hyp_tokens[chunk.hyp_start_idx:chunk.hyp_end_idx]
+
+                if op == 'equal':
+                    for rw, hw in zip(ref_segment, hyp_segment):
+                        aligned_output.append(f"CORRECT | {rw} | {hw}")
+                elif op == 'substitute':
+                    for rw, hw in zip(ref_segment, hyp_segment):
+                        aligned_output.append(f"SUBSTITUTION | {rw} | {hw}")
+                elif op == 'insert':
+                    for hw in hyp_segment:
+                        aligned_output.append(f"INSERTION |  | {hw}")
+                elif op == 'delete':
+                    for rw in ref_segment:
+                        aligned_output.append(f"DELETION | {rw} | ")
+            except Exception:
+                continue
+
+    return {
+        "wer": min(1.0, round(measures['wer'], 2)),
+        "substitutions": measures['substitutions'],
+        "deletions": measures['deletions'],
+        "insertions": measures['insertions'],
+        "references": len(ref_tokens),
+        "hypothesis": len(hyp_tokens),
+        "alignment": aligned_output
+    }
+
+def get_wer_from_json(result: dict) -> float:
+    return round(result.get("wer", 1.0), 2)
+
+def get_nltk_wer(nltk_result: dict) -> float:
+    return round(nltk_result.get("wer", 1.0), 2)
+
+def get_jiwer_alignment(jiwer_result: dict) -> list[str]:
+    return jiwer_result.get("alignment", [])
+
+def get_row_values(alignment_row: str) -> tuple[str, str, str]:
+    parts = [p.strip() for p in alignment_row.split("|")]
+    if len(parts) != 3:
+        return ("", "", "")
+    return tuple(parts)
+
+def write_alignment_to_file(file_path: str, jiwer_alignment: list[str]) -> None:
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("outcome | gt | predicted\n")
+        for row in jiwer_alignment:
+            f.write(f"{row}\n")
+
+def write_2_alignments_to_file(gt: str, hyp1: str, hyp2: str, file_path: str) -> None:
+    result1 = get_jiwer_result(gt, hyp1)
+    result2 = get_jiwer_result(gt, hyp2)
+    alignment1 = get_jiwer_alignment(result1)
+    alignment2 = get_jiwer_alignment(result2)
+
+    max_len = max(len(alignment1), len(alignment2))
+    alignment1 += [""] * (max_len - len(alignment1))
+    alignment2 += [""] * (max_len - len(alignment2))
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("outcome1 | gt | hyp1 | outcome2 | gt | hyp2\n")
+        for row1, row2 in zip(alignment1, alignment2):
+            o1, gt1, h1 = get_row_values(row1)
+            o2, gt2, h2 = get_row_values(row2)
+            f.write(f"{o1} | {gt1} | {h1} | {o2} | {gt2} | {h2}\n")
+
+def get_2_alignments_as_string_array(gt: str, hyp1: str, hyp2: str) -> list[str]:
+    result1 = get_jiwer_result(gt, hyp1)
+    result2 = get_jiwer_result(gt, hyp2)
+    alignment1 = get_jiwer_alignment(result1)
+    alignment2 = get_jiwer_alignment(result2)
+
+    max_len = max(len(alignment1), len(alignment2))
+    alignment1 += [""] * (max_len - len(alignment1))
+    alignment2 += [""] * (max_len - len(alignment2))
+
+    lines = []
+    for row1, row2 in zip(alignment1, alignment2):
+        o1, gt1, h1 = get_row_values(row1)
+        o2, gt2, h2 = get_row_values(row2)
+        lines.append(f"{o1} | {gt1} | {h1} | {o2} | {gt2} | {h2}")
+    return lines
+
+def write_alignments_to_file(lines: list[str], file_path: str) -> None:
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("outcome1 | gt | hyp1 | outcome2 | gt | hyp2\n")
+        for line in lines:
+            f.write(f"{line}\n")
+
+def get_wer_by_counting(gt: str, hyp1: str, hyp2: str, lines: list[str]) -> dict:
+    ref_tokens = normalize_string(gt)
+    ref_len = len(ref_tokens)
+
+    def count_ops(col_offset: int) -> dict:
+        subs = dels = ins = 0
+        for line in lines:
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < col_offset + 1:
+                continue
+            outcome = parts[col_offset]
+            if outcome == "SUBSTITUTION":
+                subs += 1
+            elif outcome == "DELETION":
+                dels += 1
+            elif outcome == "INSERTION":
+                ins += 1
+        wer = round((subs + dels + ins) / ref_len, 2) if ref_len else 1.0
+        wer = min(1.0, wer)
+        return {
+            "wer": wer,
+            "substitutions": subs,
+            "deletions": dels,
+            "insertions": ins
+        }
+
+    return {
+        "normalized_gt": " ".join(ref_tokens),
+        "reference_length": ref_len,
+        "hyp1": count_ops(0),
+        "hyp2": count_ops(3)
+    }
+	
+# ============================================
+
+# ntlk_jiwer_client.py - exercise the library function
+
+from nltk_jiwer_utils import (
+    get_jiwer_result,
+    get_wer_from_json,
+    get_nltk_result,
+    get_jiwer_alignment,
+    get_row_values,
+    write_alignment_to_file,
+    write_2_alignments_to_file,
+    get_2_alignments_as_string_array,
+    write_alignments_to_file,
+    get_wer_by_counting
+)
+
+gt = "the quick brown fox jumped over the lazy dog cuz they umm took the fence away"
+hyp1 = "the quick blue rat escaped over the hmm really lazy dog"
+hyp2 = "the fast green rat evaded the hmm lazy dog instantly and ferociously outside for more exercise. Now I expect these to be inserts at the very end"
+
+# JIWER
+jiwer_result_1 = get_jiwer_result(gt, hyp1)
+jiwer_wer = get_wer_from_json(jiwer_result_1)
+print(f"jiwer_wer: {jiwer_wer}")
+#print(get_jiwer_alignment(jiwer_result))
+
+# NLTK
+nltk_result = get_nltk_result(gt, hyp1)
+nltk_wer = get_wer_from_json(nltk_result)
+print(f"nltk_wer: {nltk_wer}")
+
+# Show parsed alignment
+# for row in get_jiwer_alignment(jiwer_result_1):
+#     outcome, gt_word, hyp_word = get_row_values(row)
+#     print(outcome, gt_word, hyp_word)
+
+# Write alignment to file
+alignment_output_path = "j:/projects/wer-test/sample_alignment_1.txt"
+write_alignment_to_file(alignment_output_path, get_jiwer_alignment(jiwer_result_1))
+print(f"Alignment written to {alignment_output_path}")
+
+alignment_output_path = "j:/projects/wer-test/sample_alignment_2.txt"
+jiwer_result_2 = get_jiwer_result(gt, hyp2)
+write_alignment_to_file(alignment_output_path, get_jiwer_alignment(jiwer_result_2))
+print(f"Alignment written to {alignment_output_path}")
+
+alignment_compare_output = "j:/projects/wer-test/sample_compare_output.txt"
+#write_2_alignments_to_file(gt, hyp1, hyp2, alignment_compare_output)
+#print(f"Side-by-side alignment written to {alignment_compare_output}")
+
+alignment_compare_output2 = "j:/projects/wer-test/sample_compare_output2.txt"
+lines = get_2_alignments_as_string_array(gt, hyp1, hyp2)
+write_alignments_to_file(lines, alignment_compare_output2)
+
+lines = get_2_alignments_as_string_array(gt, hyp1, hyp2)
+result = get_wer_by_counting(gt, hyp1, hyp2, lines)
+print("Normalized GT:", result["normalized_gt"])
+print("Reference length:", result["reference_length"])
+print("Hypothesis 1 WER:", result["hyp1"]["wer"])
+print("Hypothesis 1 counts:", result["hyp1"])
+print("Hypothesis 2 WER:", result["hyp2"]["wer"])
+print("Hypothesis 2 counts:", result["hyp2"])
+
+
+# ============================================
+
+# export_wer_alignments.py
+
+from __future__ import annotations
+
+from pathlib import Path
+from openpyxl import load_workbook
+from nltk_jiwer_utils import (
+    get_2_alignments_as_string_array,
+    write_alignments_to_file
+)
+
+SPREADSHEET_DIR = Path("j:/projects/sheet-logic/test-sheets/")
+SPREADSHEET_NAME = "test_4_col.xlsx"
+TARGET_WORKSHEET = "base-vs-engine"
+COLUMN_HEADERS = [
+    "ID",
+    "GT",
+    "distil-large-v2-model",
+    "distil-large-v2-engine-int8",
+    "model-WER",
+    "engine-WER"
+]
+ALIGNMENT_DIR = Path("j:/projects/wer-test/sdi-alignments/")
+
+def load_target_rows() -> list[dict[str, str]]:
+    path = SPREADSHEET_DIR / SPREADSHEET_NAME
+    workbook = load_workbook(path)
+    worksheet = workbook[TARGET_WORKSHEET]
+    headers = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
+    rows = []
+    for row in worksheet.iter_rows(min_row=2, values_only=True):
+        row_dict = {headers[i]: str(row[i]) if row[i] is not None else "" for i in range(len(headers))}
+        rows.append(row_dict)
+    return rows
+
+def generate_alignment_path(row_id: str) -> Path:
+    return ALIGNMENT_DIR / f"{row_id}.txt"
+
+def process_alignment_row(row: dict[str, str]) -> None:
+    row_id = row["ID"]
+    gt = row["GT"]
+    hyp1 = row["distil-large-v2-model"]
+    hyp2 = row["distil-large-v2-engine-int8"]
+    lines = get_2_alignments_as_string_array(gt, hyp1, hyp2)
+    write_alignments_to_file(lines, str(generate_alignment_path(row_id)))
+
+def main() -> None:
+    ALIGNMENT_DIR.mkdir(parents=True, exist_ok=True)
+    rows = load_target_rows()
+    for row in rows:
+        process_alignment_row(row)
+
+if __name__ == "__main__":
+    main()
