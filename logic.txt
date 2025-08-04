@@ -1,50 +1,87 @@
-# wer_1_hyp_alignments_to_txt.py
-
-# wer_1_hyp_alignment_to_txt.py
+# wer_alignment_1_hyp_txt_to_html.py
 
 from __future__ import annotations
-
+from typing import List
 from pathlib import Path
-from openpyxl import load_workbook
-from nltk_jiwer_utils import (
-    get_jiwer_result,
-    get_jiwer_alignment,
-    write_alignment_to_file
-)
+from collections import Counter
 
-SPREADSHEET_DIR = Path("j:/projects/sheet-logic/test-sheets/")
-SPREADSHEET_NAME = "compute_wer_ongoing.xlsx"
-TARGET_WORKSHEET = "distil-large-v2"
-COLUMN_HEADERS = ["ID", "GT", "distil-large-v2-model", "model-WER"]
-ALIGNMENT_DIR = Path("j:/projects/wer-test/sdi-alignments-model-only/")
+ALIGNMENT_DIR = Path("j:/projects/wer-test/sdi-alignments_1hyp/txt/")
+HTML_DIR = Path("j:/projects/wer-test/sdi-alignments_1hyp/html/")
 
-def load_target_rows() -> list[dict[str, str]]:
-    path = SPREADSHEET_DIR / SPREADSHEET_NAME
-    workbook = load_workbook(path)
-    worksheet = workbook[TARGET_WORKSHEET]
-    headers = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
-    rows = []
-    for row in worksheet.iter_rows(min_row=2, values_only=True):
-        row_dict = {headers[i]: str(row[i]) if row[i] is not None else "" for i in range(len(headers))}
-        rows.append(row_dict)
-    return rows
+def read_alignment_file(file_path: Path) -> List[List[str]]:
+    lines = file_path.read_text(encoding="utf-8").splitlines()
+    return [line.split(" | ") for line in lines[1:] if line.strip()]
 
-def generate_alignment_path(row_id: str) -> Path:
-    return ALIGNMENT_DIR / f"{row_id}.txt"
+def short_code(outcome: str) -> str:
+    return {
+        "CORRECT": "C",
+        "SUBSTITUTION": "S",
+        "INSERTION": "I",
+        "DELETION": "D"
+    }.get(outcome.strip().upper(), "")
 
-def process_alignment_row(row: dict[str, str]) -> None:
-    row_id = row["ID"]
-    gt = row["GT"]
-    hyp = row["distil-large-v2-model"]
-    jiwer_result = get_jiwer_result(gt, hyp)
-    alignment = get_jiwer_alignment(jiwer_result)
-    write_alignment_to_file(str(generate_alignment_path(row_id)), alignment)
+def get_cell_style(col_index: int, group_start: int, outcome_code: str) -> str:
+    base_style = "font-family:Arial;font-size:7pt;border:1px dotted black;"
+    if group_start <= col_index < group_start + 3:
+        if outcome_code == "C":
+            return base_style + "background-color:#73f097;color:#000000;"
+        if outcome_code == "D":
+            return base_style + "background-color:#ff0000;color:#ffffff;"
+        if outcome_code == "S":
+            return base_style + "background-color:#fafc5c;color:#000000;"
+        if outcome_code == "I":
+            return base_style + "background-color:#55a0e0;color:#ffffff;"
+    return base_style
 
-def main() -> None:
-    ALIGNMENT_DIR.mkdir(parents=True, exist_ok=True)
-    rows = load_target_rows()
+def make_html_row(cells: List[str], bold: bool = False) -> str:
+    tag = "th" if bold else "td"
+    row = "<tr>"
+    for i, cell in enumerate(cells):
+        style = (
+            "font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;"
+            if bold else get_cell_style(i, 0, cells[0])
+        )
+        row += f"<{tag} style=\"{style}\">{cell}</{tag}>"
+    row += "</tr>"
+    return row
+
+def get_outcome_counts(prefix: str, rows: List[List[str]], outcome_col: int, gt_col: int, hyp_col: int) -> str:
+    outcomes = [short_code(row[outcome_col]) for row in rows]
+    counts = Counter(outcomes)
+    gt_count = sum(1 for row in rows if row[gt_col].strip())
+    tr_count = sum(1 for row in rows if row[hyp_col].strip())
+    return (
+        f"<p style='font-family:Arial;font-size:8pt'>{prefix}&nbsp;&nbsp;"
+        f"C={counts['C']}, S={counts['S']}, D={counts['D']}, I={counts['I']}, "
+        f"GT={gt_count}, TR={tr_count}</p>"
+    )
+
+def html_from_alignment(file_path: Path) -> str:
+    rows = read_alignment_file(file_path)
+    html_lines = [
+        get_outcome_counts("model", rows, 0, 1, 2),
+        "<table>",
+        "<tbody>"
+    ]
+    header = ["outcome", "GT", "predicted"]
+    html_lines.append(make_html_row(header, bold=True))
     for row in rows:
-        process_alignment_row(row)
+        model_code = short_code(row[0])
+        html_row = [model_code, row[1], row[2]]
+        html_lines.append(make_html_row(html_row))
+    html_lines += ["</tbody>", "</table>"]
+    return "\n".join(html_lines)
+
+def write_html_to_file(html_content: str, out_path: Path) -> None:
+    out_path.write_text(html_content, encoding="utf-8")
+    print(f"processing alignments and writing to: {out_path}")
+
+def main():
+    HTML_DIR.mkdir(parents=True, exist_ok=True)
+    for file_path in ALIGNMENT_DIR.glob("*.txt"):
+        html = html_from_alignment(file_path)
+        out_path = HTML_DIR / (file_path.stem + ".html")
+        write_html_to_file(html, out_path)
 
 if __name__ == "__main__":
     main()
