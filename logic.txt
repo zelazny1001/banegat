@@ -1,0 +1,62 @@
+# server_local_compute_wer.py
+
+import itertools
+import string
+
+import unicodedata
+from nltk import edit_distance, string_span_tokenize
+
+
+def strip_accents(s):
+    return ''.join(c for c in unicodedata.normalize('NFD', s)
+                   if unicodedata.category(c) != 'Mn' and ord(c) <= 122)
+
+def compute(g_start: str, s_start: str) -> float:
+    g_start = g_start.lower().translate(str.maketrans('', '', string.punctuation))
+    s_start = s_start.lower().translate(str.maketrans('', '', string.punctuation))
+    g_start = strip_accents(g_start)
+    s_start = strip_accents(s_start)
+
+    g_start = g_start.split()
+    s_start = s_start.split()
+    g: list = []
+    s: list = []
+
+    for g_val, s_val in itertools.zip_longest(g_start, s_start, fillvalue=None):
+        if g_val:
+            if g_val == 'okay':
+                g.append('ok')
+            elif g_val in ['yeah', 'yea', 'ya', 'yep', 'yup', 'yes']:
+                g.append('yeah')
+            elif g_val == 'cuz':
+                g.append('because')
+            elif g_val.isupper() or g_val in ['uh-huh', 'uhuh', 'uh', 'huh', 'um', 'hm', 'umm', 'hmm']:
+                pass
+            else:
+                g.append(g_val)
+        if s_val:
+            if s_val == 'okay':
+                s.append('ok')
+            elif s_val in ['yeah', 'yea', 'ya', 'yep', 'yup', 'yes']:
+                s.append('yeah')
+            elif s_val == 'cuz':
+                s.append('because')
+            elif s_val.isupper() or s_val in ['uh-huh', 'uhuh', 'uh', 'huh', 'um', 'hm', 'umm', 'hmm']:
+                pass
+            else:
+                s.append(s_val)
+
+    lev_dist = edit_distance(g, s)
+    print("G tokens:", g)
+    print("S tokens:", s)
+    print("Edit distance:", lev_dist, "Reference length:", len(g))
+
+    if not len(g):
+        return 0 if not len(s) else 1
+    return min(1, lev_dist / len(g))
+
+gt = 'the quick brown fox'
+tr = 'the quick brown'
+wer = compute(gt, tr);
+
+print(f'WER: {wer}')
