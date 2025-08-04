@@ -44,17 +44,45 @@ def make_html_row(cells: List[str], bold: bool = False) -> str:
     row += "</tr>"
     return row
 
-def get_outcome_counts(which: str, outcomes: List[str]) -> str:
+def get_outcome_counts_old(prefix: str, outcomes: List[str]) -> str:
     counts = Counter(short_code(o) for o in outcomes)
-    return f"<p style='font-family:Arial;font-size:8pt'>{which}&nbsp&nbspC={counts['C']}, S={counts['S']}, D={counts['D']}, I={counts['I']}</p>"
+    return f"<p style='font-family:Arial;font-size:8pt'>{prefix}&nbsp&nbspC={counts['C']}, S={counts['S']}, D={counts['D']}, I={counts['I']}</p>"
 
-def html_from_alignment(file_path: Path) -> str:
+def get_outcome_counts(prefix: str, rows: List[List[str]], outcome_col: int, gt_col: int, hyp_col: int) -> str:
+    outcomes = [short_code(row[outcome_col]) for row in rows]
+    counts = Counter(outcomes)
+    gt_count = sum(1 for row in rows if row[gt_col].strip())
+    tr_count = sum(1 for row in rows if row[hyp_col].strip())
+    total = counts["C"] + counts["S"] + counts["D"]
+    errors = counts["S"] + counts["D"] + counts["I"]
+    wer = round(errors / total, 2) if total > 0 else 0.0
+    return f"<p style='font-family:Arial;font-size:8pt'>{prefix}&nbsp;&nbsp;C={counts['C']}, S={counts['S']}, D={counts['D']}, I={counts['I']}, GT={gt_count}, TR={tr_count}</p>"
+
+def html_from_alignment_old(file_path: Path) -> str:
     rows = read_alignment_file(file_path)
     base_outcomes = [row[0] for row in rows]
     model_outcomes = [row[3] for row in rows]
     html_lines = [
         get_outcome_counts('base', base_outcomes),
         get_outcome_counts('engine', model_outcomes),
+        "<table>",
+        "<tbody>"
+    ]
+    header = ["outcome-base", "GT", "base", "outcome-engine", "GT", "engine"]
+    html_lines.append(make_html_row(header, bold=True))
+    for row in rows:
+        base_code = short_code(row[0])
+        model_code = short_code(row[3])
+        html_row = [base_code, row[1], row[2], model_code, row[4], row[5]]
+        html_lines.append(make_html_row(html_row))
+    html_lines += ["</tbody>", "</table>"]
+    return "\n".join(html_lines)
+
+def html_from_alignment(file_path: Path) -> str:
+    rows = read_alignment_file(file_path)
+    html_lines = [
+        get_outcome_counts('base&nbsp;&nbsp;&nbsp;', rows, 0, 1, 2),
+        get_outcome_counts('engine', rows, 3, 4, 5),
         "<table>",
         "<tbody>"
     ]
