@@ -2,10 +2,8 @@
 
 import itertools
 import string
-
 import unicodedata
 from nltk import edit_distance, string_span_tokenize
-
 
 def strip_accents(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s)
