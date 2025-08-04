@@ -1,133 +1,50 @@
-# wer_for_3_column_data.py
+# wer_1_hyp_alignments_to_txt.py
+
+# wer_1_hyp_alignment_to_txt.py
 
 from __future__ import annotations
-import os
-import re
-import httpx
-from pathlib import Path
-from openpyxl import load_workbook, Workbook
-from openpyxl.styles import Font
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.worksheet import Worksheet
 
+from pathlib import Path
+from openpyxl import load_workbook
 from nltk_jiwer_utils import (
     get_jiwer_result,
-    get_nltk_result,
-    get_wer_from_json
+    get_jiwer_alignment,
+    write_alignment_to_file
 )
 
 SPREADSHEET_DIR = Path("j:/projects/sheet-logic/test-sheets/")
 SPREADSHEET_NAME = "compute_wer_ongoing.xlsx"
 TARGET_WORKSHEET = "distil-large-v2"
-TRANSCRIPTION_DIR = Path("j:/tmp/vad/synthetics/engine-and-base-version-transcriptions/")
-GT_DIR = Path("j:/projects/sheet-logic/ground-truths/")
-
-USE_LOCAL_SERVER_WER = True
-WER_ENDPOINT = "http://api_for_wer:2517/wer"
-PARALLELIZE_WER = False
-
-ID_PREFIX = "synthetic_"
-GT_PREFIX = "ground_truth_"
-BASE_SUFFIX = "_Combined_base.txt"
 COLUMN_HEADERS = ["ID", "GT", "distil-large-v2-model", "model-WER"]
-COLUMN_WIDTHS = [15, 45, 45, 12]
+ALIGNMENT_DIR = Path("j:/projects/wer-test/sdi-alignments-model-only/")
 
-def extract_ids(transcription_dir: Path) -> list[str]:
-    filenames = [f.name for f in transcription_dir.glob("*.txt")]
-    pattern = re.compile(r"Synthetic_(Call_\d+_\d+)_Combined_")
-    ids = sorted({(ID_PREFIX + m.group(1).lower()) for f in filenames if (m := pattern.match(f))})
-    return ids
-
-def read_file(filepath: Path) -> str:
-    return filepath.read_text(encoding="utf-8").strip()
-
-def get_gt_text(call_id: str) -> str | None:
-    filename = GT_PREFIX + call_id[len(ID_PREFIX):] + ".txt"
-    path = GT_DIR / filename
-    return read_file(path) if path.exists() else None
-
-def get_base_transcription(call_id: str) -> str:
-    filename = "Synthetic_" + call_id[len(ID_PREFIX):] + BASE_SUFFIX
-    return read_file(TRANSCRIPTION_DIR / filename)
-
-def normalize_whitespace(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
-
-def calculate_wer(ground_truth: str, transcript: str) -> str:
-    ground_truth = normalize_whitespace(ground_truth)
-    transcript = normalize_whitespace(transcript)
-    if USE_LOCAL_SERVER_WER:
-        jiwer_result = get_jiwer_result(ground_truth, transcript)
-        jiwer_wer = 100 * get_wer_from_json(jiwer_result)
-        return f"{jiwer_wer:.2f}"
-    else:
-        resp = httpx.post(WER_ENDPOINT, json={"groundTruth": ground_truth, "transcript": transcript}, timeout=5.0)
-        text = resp.text.strip()
-        try:
-            value = float(text)
-            return f"{value:.2f}"
-        except ValueError:
-            return "WER API Error"
-
-def format_worksheet(ws: Worksheet):
-    font = Font(name="Aptos", size=9)
-    header_font = Font(name="Aptos", size=9, bold=True)
-    for row in ws.iter_rows():
-        for cell in row:
-            cell.font = font
-    for cell in ws[1]:
-        cell.font = header_font
-    ws.auto_filter.ref = ws.dimensions
-    ws.freeze_panes = "A2"
-    for i, width in enumerate(COLUMN_WIDTHS, 1):
-        ws.column_dimensions[get_column_letter(i)].width = width
-
-def write_data(ws: Worksheet, rows: list[list[str]]):
-    ws.delete_rows(1, ws.max_row)
-    ws.append(COLUMN_HEADERS)
-    for i, row in enumerate(rows, 2):
-        for j, value in enumerate(row, 1):
-            ws.cell(i, j).value = value if value not in (None, "") else " "
-
-def prepare_workbook() -> tuple[Workbook, Worksheet]:
+def load_target_rows() -> list[dict[str, str]]:
     path = SPREADSHEET_DIR / SPREADSHEET_NAME
-    if path.exists():
-        wb = load_workbook(path)
-        if TARGET_WORKSHEET in wb.sheetnames:
-            ws = wb[TARGET_WORKSHEET]
-        else:
-            ws = wb.create_sheet(TARGET_WORKSHEET)
-    else:
-        wb = Workbook()
-        default_sheet = wb.active
-        wb.remove(default_sheet)
-        ws = wb.create_sheet(TARGET_WORKSHEET)
-    return wb, ws
+    workbook = load_workbook(path)
+    worksheet = workbook[TARGET_WORKSHEET]
+    headers = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
+    rows = []
+    for row in worksheet.iter_rows(min_row=2, values_only=True):
+        row_dict = {headers[i]: str(row[i]) if row[i] is not None else "" for i in range(len(headers))}
+        rows.append(row_dict)
+    return rows
 
-def main():
-    wb, ws = prepare_workbook()
-    ids = extract_ids(TRANSCRIPTION_DIR)
-    data = []
-    total = len(ids)
+def generate_alignment_path(row_id: str) -> Path:
+    return ALIGNMENT_DIR / f"{row_id}.txt"
 
-    for idx, call_id in enumerate(ids, 1):
-        print(f"[{idx}/{total}] Processing {call_id}...")
-        model_raw = get_base_transcription(call_id)
-        gt_raw = get_gt_text(call_id)
+def process_alignment_row(row: dict[str, str]) -> None:
+    row_id = row["ID"]
+    gt = row["GT"]
+    hyp = row["distil-large-v2-model"]
+    jiwer_result = get_jiwer_result(gt, hyp)
+    alignment = get_jiwer_alignment(jiwer_result)
+    write_alignment_to_file(str(generate_alignment_path(row_id)), alignment)
 
-        model = normalize_whitespace(model_raw)
-
-        if gt_raw is None:
-            row = [call_id, "GT missing", model, " "]
-        else:
-            gt = normalize_whitespace(gt_raw)
-            wer_model = calculate_wer(gt, model)
-            row = [call_id, gt, model, wer_model]
-        data.append(row)
-
-    write_data(ws, data)
-    format_worksheet(ws)
-    wb.save(SPREADSHEET_DIR / SPREADSHEET_NAME)
+def main() -> None:
+    ALIGNMENT_DIR.mkdir(parents=True, exist_ok=True)
+    rows = load_target_rows()
+    for row in rows:
+        process_alignment_row(row)
 
 if __name__ == "__main__":
     main()
