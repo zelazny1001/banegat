@@ -1,111 +1,133 @@
-# wer_alignment_txt_to_html.py - read alignment files in .txt format and convert to .html format using html tables
+# wer_for_3_column_data.py
 
 from __future__ import annotations
-from typing import List
+import os
+import re
+import httpx
 from pathlib import Path
-from collections import Counter
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 
-ALIGNMENT_DIR = Path("j:/projects/wer-test/sdi-alignments/txt/")
-HTML_DIR = Path("j:/projects/wer-test/sdi-alignments/html/")
+from nltk_jiwer_utils import (
+    get_jiwer_result,
+    get_nltk_result,
+    get_wer_from_json
+)
 
-def read_alignment_file(file_path: Path) -> List[List[str]]:
-    lines = file_path.read_text(encoding="utf-8").splitlines()
-    return [line.split(" | ") for line in lines[1:] if line.strip()]
+SPREADSHEET_DIR = Path("j:/projects/sheet-logic/test-sheets/")
+SPREADSHEET_NAME = "compute_wer_ongoing.xlsx"
+TARGET_WORKSHEET = "distil-large-v2"
+TRANSCRIPTION_DIR = Path("j:/tmp/vad/synthetics/engine-and-base-version-transcriptions/")
+GT_DIR = Path("j:/projects/sheet-logic/ground-truths/")
 
-def short_code(outcome: str) -> str:
-    return {
-        "CORRECT": "C",
-        "SUBSTITUTION": "S",
-        "INSERTION": "I",
-        "DELETION": "D"
-    }.get(outcome.strip().upper(), "")
+USE_LOCAL_SERVER_WER = True
+WER_ENDPOINT = "http://api_for_wer:2517/wer"
+PARALLELIZE_WER = False
 
-def get_cell_style(col_index: int, group_start: int, outcome_code: str) -> str:
-    base_style = "font-family:Arial;font-size:7pt;border:1px dotted black;"
-    if group_start <= col_index < group_start + 3:
-        if outcome_code == "C":
-            return base_style + "background-color:#73f097;color:#000000;"
-        if outcome_code == "D":
-            return base_style + "background-color:#ff0000;color:#ffffff;"
-        if outcome_code == "S":
-            return base_style + "background-color:#fafc5c;color:#000000;"
-        if outcome_code == "I":
-            return base_style + "background-color:#55a0e0;color:#000000;"
-    return base_style
+ID_PREFIX = "synthetic_"
+GT_PREFIX = "ground_truth_"
+BASE_SUFFIX = "_Combined_base.txt"
+COLUMN_HEADERS = ["ID", "GT", "distil-large-v2-model", "model-WER"]
+COLUMN_WIDTHS = [15, 45, 45, 12]
 
-def make_html_row(cells: List[str], bold: bool = False) -> str:
-    tag = "th" if bold else "td"
-    row = "<tr>"
-    for i, cell in enumerate(cells):
-        group_start = 0 if i < 3 else 3
-        outcome_code = cells[0] if i < 3 else cells[3]
-        style = get_cell_style(i, group_start, outcome_code) if not bold else "font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;"
-        row += f"<{tag} style=\"{style}\">{cell}</{tag}>"
-    row += "</tr>"
-    return row
+def extract_ids(transcription_dir: Path) -> list[str]:
+    filenames = [f.name for f in transcription_dir.glob("*.txt")]
+    pattern = re.compile(r"Synthetic_(Call_\d+_\d+)_Combined_")
+    ids = sorted({(ID_PREFIX + m.group(1).lower()) for f in filenames if (m := pattern.match(f))})
+    return ids
 
-def get_outcome_counts_old(prefix: str, outcomes: List[str]) -> str:
-    counts = Counter(short_code(o) for o in outcomes)
-    return f"<p style='font-family:Arial;font-size:8pt'>{prefix}&nbsp&nbspC={counts['C']}, S={counts['S']}, D={counts['D']}, I={counts['I']}</p>"
+def read_file(filepath: Path) -> str:
+    return filepath.read_text(encoding="utf-8").strip()
 
-def get_outcome_counts(prefix: str, rows: List[List[str]], outcome_col: int, gt_col: int, hyp_col: int) -> str:
-    outcomes = [short_code(row[outcome_col]) for row in rows]
-    counts = Counter(outcomes)
-    gt_count = sum(1 for row in rows if row[gt_col].strip())
-    tr_count = sum(1 for row in rows if row[hyp_col].strip())
-    total = counts["C"] + counts["S"] + counts["D"]
-    errors = counts["S"] + counts["D"] + counts["I"]
-    wer = round(errors / total, 2) if total > 0 else 0.0
-    return f"<p style='font-family:Arial;font-size:8pt'>{prefix}&nbsp;&nbsp;C={counts['C']}, S={counts['S']}, D={counts['D']}, I={counts['I']}, GT={gt_count}, TR={tr_count}</p>"
+def get_gt_text(call_id: str) -> str | None:
+    filename = GT_PREFIX + call_id[len(ID_PREFIX):] + ".txt"
+    path = GT_DIR / filename
+    return read_file(path) if path.exists() else None
 
-def html_from_alignment_old(file_path: Path) -> str:
-    rows = read_alignment_file(file_path)
-    base_outcomes = [row[0] for row in rows]
-    model_outcomes = [row[3] for row in rows]
-    html_lines = [
-        get_outcome_counts('base', base_outcomes),
-        get_outcome_counts('engine', model_outcomes),
-        "<table>",
-        "<tbody>"
-    ]
-    header = ["outcome-base", "GT", "base", "outcome-engine", "GT", "engine"]
-    html_lines.append(make_html_row(header, bold=True))
-    for row in rows:
-        base_code = short_code(row[0])
-        model_code = short_code(row[3])
-        html_row = [base_code, row[1], row[2], model_code, row[4], row[5]]
-        html_lines.append(make_html_row(html_row))
-    html_lines += ["</tbody>", "</table>"]
-    return "\n".join(html_lines)
+def get_base_transcription(call_id: str) -> str:
+    filename = "Synthetic_" + call_id[len(ID_PREFIX):] + BASE_SUFFIX
+    return read_file(TRANSCRIPTION_DIR / filename)
 
-def html_from_alignment(file_path: Path) -> str:
-    rows = read_alignment_file(file_path)
-    html_lines = [
-        get_outcome_counts('base&nbsp;&nbsp;&nbsp;', rows, 0, 1, 2),
-        get_outcome_counts('engine', rows, 3, 4, 5),
-        "<table>",
-        "<tbody>"
-    ]
-    header = ["outcome-base", "GT", "base", "outcome-engine", "GT", "engine"]
-    html_lines.append(make_html_row(header, bold=True))
-    for row in rows:
-        base_code = short_code(row[0])
-        model_code = short_code(row[3])
-        html_row = [base_code, row[1], row[2], model_code, row[4], row[5]]
-        html_lines.append(make_html_row(html_row))
-    html_lines += ["</tbody>", "</table>"]
-    return "\n".join(html_lines)
+def normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
 
-def write_html_to_file(html_content: str, out_path: Path) -> None:
-    out_path.write_text(html_content, encoding="utf-8")
-    print(f"processing alignments and writing to: {out_path}")
+def calculate_wer(ground_truth: str, transcript: str) -> str:
+    ground_truth = normalize_whitespace(ground_truth)
+    transcript = normalize_whitespace(transcript)
+    if USE_LOCAL_SERVER_WER:
+        jiwer_result = get_jiwer_result(ground_truth, transcript)
+        jiwer_wer = 100 * get_wer_from_json(jiwer_result)
+        return f"{jiwer_wer:.2f}"
+    else:
+        resp = httpx.post(WER_ENDPOINT, json={"groundTruth": ground_truth, "transcript": transcript}, timeout=5.0)
+        text = resp.text.strip()
+        try:
+            value = float(text)
+            return f"{value:.2f}"
+        except ValueError:
+            return "WER API Error"
+
+def format_worksheet(ws: Worksheet):
+    font = Font(name="Aptos", size=9)
+    header_font = Font(name="Aptos", size=9, bold=True)
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.font = font
+    for cell in ws[1]:
+        cell.font = header_font
+    ws.auto_filter.ref = ws.dimensions
+    ws.freeze_panes = "A2"
+    for i, width in enumerate(COLUMN_WIDTHS, 1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+
+def write_data(ws: Worksheet, rows: list[list[str]]):
+    ws.delete_rows(1, ws.max_row)
+    ws.append(COLUMN_HEADERS)
+    for i, row in enumerate(rows, 2):
+        for j, value in enumerate(row, 1):
+            ws.cell(i, j).value = value if value not in (None, "") else " "
+
+def prepare_workbook() -> tuple[Workbook, Worksheet]:
+    path = SPREADSHEET_DIR / SPREADSHEET_NAME
+    if path.exists():
+        wb = load_workbook(path)
+        if TARGET_WORKSHEET in wb.sheetnames:
+            ws = wb[TARGET_WORKSHEET]
+        else:
+            ws = wb.create_sheet(TARGET_WORKSHEET)
+    else:
+        wb = Workbook()
+        default_sheet = wb.active
+        wb.remove(default_sheet)
+        ws = wb.create_sheet(TARGET_WORKSHEET)
+    return wb, ws
 
 def main():
-    HTML_DIR.mkdir(parents=True, exist_ok=True)
-    for file_path in ALIGNMENT_DIR.glob("*.txt"):
-        html = html_from_alignment(file_path)
-        out_path = HTML_DIR / (file_path.stem + ".html")
-        write_html_to_file(html, out_path)
+    wb, ws = prepare_workbook()
+    ids = extract_ids(TRANSCRIPTION_DIR)
+    data = []
+    total = len(ids)
+
+    for idx, call_id in enumerate(ids, 1):
+        print(f"[{idx}/{total}] Processing {call_id}...")
+        model_raw = get_base_transcription(call_id)
+        gt_raw = get_gt_text(call_id)
+
+        model = normalize_whitespace(model_raw)
+
+        if gt_raw is None:
+            row = [call_id, "GT missing", model, " "]
+        else:
+            gt = normalize_whitespace(gt_raw)
+            wer_model = calculate_wer(gt, model)
+            row = [call_id, gt, model, wer_model]
+        data.append(row)
+
+    write_data(ws, data)
+    format_worksheet(ws)
+    wb.save(SPREADSHEET_DIR / SPREADSHEET_NAME)
 
 if __name__ == "__main__":
     main()
