@@ -1,0 +1,83 @@
+# wer_alignment_txt_to_html.py - read alignment files in .txt format and convert to .html format using html tables
+
+from __future__ import annotations
+from typing import List
+from pathlib import Path
+from collections import Counter
+
+ALIGNMENT_DIR = Path("j:/projects/wer-test/sdi-alignments/txt/")
+HTML_DIR = Path("j:/projects/wer-test/sdi-alignments/html/")
+
+def read_alignment_file(file_path: Path) -> List[List[str]]:
+    lines = file_path.read_text(encoding="utf-8").splitlines()
+    return [line.split(" | ") for line in lines[1:] if line.strip()]
+
+def short_code(outcome: str) -> str:
+    return {
+        "CORRECT": "C",
+        "SUBSTITUTION": "S",
+        "INSERTION": "I",
+        "DELETION": "D"
+    }.get(outcome.strip().upper(), "")
+
+def get_cell_style(col_index: int, group_start: int, outcome_code: str) -> str:
+    base_style = "font-family:Arial;font-size:7pt;border:1px dotted black;"
+    if group_start <= col_index < group_start + 3:
+        if outcome_code == "C":
+            return base_style + "background-color:#73f097;color:#000000;"
+        if outcome_code == "D":
+            return base_style + "background-color:#ff0000;color:#ffffff;"
+        if outcome_code == "S":
+            return base_style + "background-color:#fafc5c;color:#000000;"
+        if outcome_code == "I":
+            return base_style + "background-color:#55a0e0;color:#000000;"
+    return base_style
+
+def make_html_row(cells: List[str], bold: bool = False) -> str:
+    tag = "th" if bold else "td"
+    row = "<tr>"
+    for i, cell in enumerate(cells):
+        group_start = 0 if i < 3 else 3
+        outcome_code = cells[0] if i < 3 else cells[3]
+        style = get_cell_style(i, group_start, outcome_code) if not bold else "font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;"
+        row += f"<{tag} style=\"{style}\">{cell}</{tag}>"
+    row += "</tr>"
+    return row
+
+def get_outcome_counts(which: str, outcomes: List[str]) -> str:
+    counts = Counter(short_code(o) for o in outcomes)
+    return f"<p style='font-family:Arial;font-size:8pt'>{which}&nbsp&nbspC={counts['C']}, S={counts['S']}, D={counts['D']}, I={counts['I']}</p>"
+
+def html_from_alignment(file_path: Path) -> str:
+    rows = read_alignment_file(file_path)
+    base_outcomes = [row[0] for row in rows]
+    model_outcomes = [row[3] for row in rows]
+    html_lines = [
+        get_outcome_counts('base', base_outcomes),
+        get_outcome_counts('engine', model_outcomes),
+        "<table>",
+        "<tbody>"
+    ]
+    header = ["outcome-base", "GT", "base", "outcome-engine", "GT", "engine"]
+    html_lines.append(make_html_row(header, bold=True))
+    for row in rows:
+        base_code = short_code(row[0])
+        model_code = short_code(row[3])
+        html_row = [base_code, row[1], row[2], model_code, row[4], row[5]]
+        html_lines.append(make_html_row(html_row))
+    html_lines += ["</tbody>", "</table>"]
+    return "\n".join(html_lines)
+
+def write_html_to_file(html_content: str, out_path: Path) -> None:
+    out_path.write_text(html_content, encoding="utf-8")
+    print(f"processing alignments and writing to: {out_path}")
+
+def main():
+    HTML_DIR.mkdir(parents=True, exist_ok=True)
+    for file_path in ALIGNMENT_DIR.glob("*.txt"):
+        html = html_from_alignment(file_path)
+        out_path = HTML_DIR / (file_path.stem + ".html")
+        write_html_to_file(html, out_path)
+
+if __name__ == "__main__":
+    main()
