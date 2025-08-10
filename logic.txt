@@ -1,87 +1,76 @@
-# wer_alignment_1_hyp_txt_to_html.py
+# convert_excel_to_delimited_file.py
+# convert specified columns in a target worksheet from either a .xls or .xlsx spreadsheet to a delimiter (eg. '|') separated text file
 
-from __future__ import annotations
-from typing import List
-from pathlib import Path
-from collections import Counter
+from typing import List, Tuple
+from openpyxl import load_workbook
+import xlrd
+import os
 
-ALIGNMENT_DIR = Path("j:/projects/wer-test/sdi-alignments_1hyp/txt/")
-HTML_DIR = Path("j:/projects/wer-test/sdi-alignments_1hyp/html/")
+SPREADSHEET_PATH = 'j:/projects/sheet-logic/expected-interleave-result.xlsx' #'j:/appraiseassist/data/CodeFileLists-2.xls'
+WORKSHEET_TO_EXTRACT = 'analysis' # 'State Category Codes'
+COLUMNS_TO_EXTRACT = ['filename', 'transcript', 'call'] # ['Code', 'Name', 'Description']
 
-def read_alignment_file(file_path: Path) -> List[List[str]]:
-    lines = file_path.read_text(encoding="utf-8").splitlines()
-    return [line.split(" | ") for line in lines[1:] if line.strip()]
+FLAT_FILE_PATH = 'j:/projects/sheet-logic/analysis-delimiter-test1.txt'
+INCLUDE_HEADER = True
+FLAT_FILE_DELIMITER = '|'
+SPACE_AROUND_DELIMITER = True
 
-def short_code(outcome: str) -> str:
-    return {
-        "CORRECT": "C",
-        "SUBSTITUTION": "S",
-        "INSERTION": "I",
-        "DELETION": "D"
-    }.get(outcome.strip().upper(), "")
+def norm(s: str) -> str:
+    return ' '.join(str(s).split()).strip().lower()
 
-def get_cell_style(col_index: int, group_start: int, outcome_code: str) -> str:
-    base_style = "font-family:Arial;font-size:7pt;border:1px dotted black;"
-    if group_start <= col_index < group_start + 3:
-        if outcome_code == "C":
-            return base_style + "background-color:#73f097;color:#000000;"
-        if outcome_code == "D":
-            return base_style + "background-color:#ff0000;color:#ffffff;"
-        if outcome_code == "S":
-            return base_style + "background-color:#fafc5c;color:#000000;"
-        if outcome_code == "I":
-            return base_style + "background-color:#55a0e0;color:#ffffff;"
-    return base_style
+def value_to_string(v) -> str:
+    if v is None:
+        return ''
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
 
-def make_html_row(cells: List[str], bold: bool = False) -> str:
-    tag = "th" if bold else "td"
-    row = "<tr>"
-    for i, cell in enumerate(cells):
-        style = (
-            "font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;"
-            if bold else get_cell_style(i, 0, cells[0])
-        )
-        row += f"<{tag} style=\"{style}\">{cell}</{tag}>"
-    row += "</tr>"
-    return row
+def resolve_worksheet_name(wb, target: str):
+    target_n = norm(target)
+    for name in wb.sheetnames:
+        if norm(name) == target_n:
+            return wb[name]
+    raise KeyError(f'Worksheet not found. Requested: "{target}". Available: {wb.sheetnames}')
 
-def get_outcome_counts(prefix: str, rows: List[List[str]], outcome_col: int, gt_col: int, hyp_col: int) -> str:
-    outcomes = [short_code(row[outcome_col]) for row in rows]
-    counts = Counter(outcomes)
-    gt_count = sum(1 for row in rows if row[gt_col].strip())
-    tr_count = sum(1 for row in rows if row[hyp_col].strip())
-    return (
-        f"<p style='font-family:Arial;font-size:8pt'>{prefix}&nbsp;&nbsp;"
-        f"C={counts['C']}, S={counts['S']}, D={counts['D']}, I={counts['I']}, "
-        f"GT={gt_count}, TR={tr_count}</p>"
-    )
+def read_worksheet_columns(spreadsheet_path: str, worksheet_name: str, columns: List[str]) -> Tuple[List[str], List[List[str]]]:
+    ext = os.path.splitext(spreadsheet_path)[1].lower()
+    if ext == '.xlsx':
+        wb = load_workbook(spreadsheet_path, data_only=True, read_only=True)
+        ws = resolve_worksheet_name(wb, worksheet_name)
+        header_cells = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+        header_map = {str(h).strip(): idx for idx, h in enumerate(header_cells) if h is not None}
+        col_indices = [header_map[c] for c in columns]
+        rows: List[List[str]] = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            rows.append([value_to_string(row[i]) if i < len(row) else '' for i in col_indices])
+        return columns, rows
+    elif ext == '.xls':
+        book = xlrd.open_workbook(spreadsheet_path)
+        sheet = book.sheet_by_name(worksheet_name)
+        headers = [value_to_string(sheet.cell_value(0, col)) for col in range(sheet.ncols)]
+        col_indices = [headers.index(col) for col in columns]
+        rows: List[List[str]] = []
+        for row_idx in range(1, sheet.nrows):
+            rows.append([value_to_string(sheet.cell_value(row_idx, col)) for col in col_indices])
+        return columns, rows
+    else:
+        raise ValueError(f'Unsupported spreadsheet format: {ext}')
 
-def html_from_alignment(file_path: Path) -> str:
-    rows = read_alignment_file(file_path)
-    html_lines = [
-        get_outcome_counts("model", rows, 0, 1, 2),
-        "<table>",
-        "<tbody>"
-    ]
-    header = ["outcome", "GT", "predicted"]
-    html_lines.append(make_html_row(header, bold=True))
-    for row in rows:
-        model_code = short_code(row[0])
-        html_row = [model_code, row[1], row[2]]
-        html_lines.append(make_html_row(html_row))
-    html_lines += ["</tbody>", "</table>"]
-    return "\n".join(html_lines)
+def filter_rows_for_columns(rows: List[List[str]]) -> List[List[str]]:
+    return [row for row in rows if any((v or '').strip() != '' for v in row)]
 
-def write_html_to_file(html_content: str, out_path: Path) -> None:
-    out_path.write_text(html_content, encoding="utf-8")
-    print(f"processing alignments and writing to: {out_path}")
+def write_delimited_file(path: str, headers: List[str], rows: List[List[str]], delimiter: str, include_header: bool, space_around: bool) -> None:
+    joiner = f' {delimiter} ' if space_around else delimiter
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        if include_header:
+            f.write(joiner.join(headers) + '\n')
+        for row in rows:
+            f.write(joiner.join(v if v is not None else '' for v in row) + '\n')
 
-def main():
-    HTML_DIR.mkdir(parents=True, exist_ok=True)
-    for file_path in ALIGNMENT_DIR.glob("*.txt"):
-        html = html_from_alignment(file_path)
-        out_path = HTML_DIR / (file_path.stem + ".html")
-        write_html_to_file(html, out_path)
+def main() -> None:
+    headers, raw_rows = read_worksheet_columns(SPREADSHEET_PATH, WORKSHEET_TO_EXTRACT, COLUMNS_TO_EXTRACT)
+    rows = filter_rows_for_columns(raw_rows)
+    write_delimited_file(FLAT_FILE_PATH, headers, rows, FLAT_FILE_DELIMITER, INCLUDE_HEADER, SPACE_AROUND_DELIMITER)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
