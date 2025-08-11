@@ -1,2 +1,5 @@
 for idx, row in enumerate(rows, start=1):
-    ws.append([idx] + [(v if v is not None else '') for v in row])
+    if idx == 1:
+        ws.append([idx] + [(v if v is not None else '') for v in row])
+    else:
+        ws.append([idx] + [(v.upper() if isinstance(v, str) else v) if v is not None else '' for v in row])
