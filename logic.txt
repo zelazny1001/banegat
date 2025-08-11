@@ -1,5 +1,15 @@
-for idx, row in enumerate(rows, start=1):
-    if idx == 1:
-        ws.append([idx] + [(v if v is not None else '') for v in row])
-    else:
-        ws.append([idx] + [(v.upper() if isinstance(v, str) else v) if v is not None else '' for v in row])
+    for idx, row in enumerate(rows, start=1):
+        if idx == 1:
+            current_values = [(v if v is not None else '') for v in row]
+        else:
+            current_values = [
+                (v.upper() if isinstance(v, str) else v) if v is not None else '' 
+                for v in row
+            ]
+
+        if len(current_values) >= 2:
+            match_flag = str(current_values[-2]) == str(current_values[-1])
+        else:
+            match_flag = False
+
+        ws.append([idx] + current_values + [match_flag])
