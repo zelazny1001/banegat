@@ -1,14 +1,82 @@
-for idx, row in enumerate(rows, start=1):
-    current_values = []
-    for col_i, v in enumerate(row):
-        if col_i >= len(row) - 2 and isinstance(v, str):
-            current_values.append(v.upper() if v is not None else '')
-        else:
-            current_values.append(v if v is not None else '')
+#threshold_post_processor.py
+import configparser
+import csv
+import os
+import sys
+from typing import List, Tuple
 
-    if len(current_values) >= 2:
-        match_flag = str(current_values[-2]) == str(current_values[-1])
+CONFIG_FILE = r'j:/projects/threshold/threshold_config.ini'
+
+DEFAULTS = {
+    'stats_path': 'j:/projects/threshold/stats1.txt',
+    'x_axis': 'x_axis',
+    'y_axis': 'micro-f1',
+    'lower_bound': '0.1',
+    'upper_bound': '0.99',
+    'position': 'last'
+}
+
+def load_config(config_path: str) -> dict:
+    if not os.path.isfile(config_path):
+        print(f"Error: Config file not found at '{config_path}'")
+        sys.exit(1)
+    cfg_values = DEFAULTS.copy()
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path)
+    if 'defaults' in cfg:
+        for key in cfg_values.keys():
+            if key in cfg['defaults'] and cfg['defaults'][key] != '':
+                cfg_values[key] = cfg['defaults'][key]
+    return cfg_values
+
+def read_tsv_columns(stats_path: str, x_axis: str, y_axis: str) -> List[Tuple[float, float]]:
+    with open(stats_path, 'r', encoding='utf-8', newline='') as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        if not reader.fieldnames or x_axis not in reader.fieldnames or y_axis not in reader.fieldnames:
+            raise ValueError('Requested columns not found in header')
+        return [(float(row[x_axis]), float(row[y_axis])) for row in reader]
+
+def filter_by_bounds(pairs: List[Tuple[float, float]], lower_bound: float, upper_bound: float) -> List[Tuple[float, float]]:
+    return [(x, y) for x, y in pairs if lower_bound <= x <= upper_bound]
+
+def find_x_position_for_max_y(pairs: List[Tuple[float, float]], position: str) -> float:
+    if not pairs:
+        raise ValueError('No data within bounds')
+    m = max(y for _, y in pairs)
+    if position == 'first':
+        for x, y in pairs:
+            if y == m:
+                return x
     else:
-        match_flag = False
+        for x, y in reversed(pairs):
+            if y == m:
+                return x
+    raise RuntimeError('No maximum found')
 
-    ws.append([idx] + current_values + [match_flag])
+def get_post_processed_position(config: dict) -> float:
+    pairs = read_tsv_columns(config['stats_path'], config['x_axis'], config['y_axis'])
+    bounded = filter_by_bounds(
+        pairs,
+        float(config['lower_bound']),
+        float(config['upper_bound'])
+    )
+    return find_x_position_for_max_y(bounded, config['position'])
+
+def main() -> None:
+    config = load_config(CONFIG_FILE)
+    result = get_post_processed_position(config)
+    print(f"Recommended {config.get('y_axis')} threshold with bounds {config.get('lower_bound')}, {config.get('upper_bound')}: {result}")
+
+if __name__ == '__main__':
+    main()
+
+#========================= config.ini === set location in code above
+'''
+[defaults]
+stats_path = j:/projects/threshold/stats1.txt
+x_axis = x_axis
+y_axis = micro-f1
+lower_bound = 0.1
+upper_bound = 0.99
+position = last
+'''
