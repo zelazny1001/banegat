@@ -1,0 +1,142 @@
+#threshold_post_processor2.py
+import configparser
+import csv
+import os
+import sys
+from typing import List, Tuple, Optional
+
+CONFIG_FILE = 'threshold_config.ini'
+
+DEFAULTS = {
+    'stats_path': 'stats1.txt',
+    'x': 'threshold',
+    'y': 'micro f1',
+    'y1': 'micro recall',
+    'y1_lower_bound': 0.7,
+    'y2': 'micro precision',
+    'y2_lower_bound': 0.8,
+    'lower_bound': 0.1,
+    'upper_bound': 0.99,
+    'position': 'last'
+}
+
+def load_config(config_path: str, config_section: str) -> dict:
+    if not os.path.isfile(config_path):
+        print(f"Error: Config file not found at '{config_path}'")
+        sys.exit(1)
+    cfg_values = DEFAULTS.copy()
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path)
+    if config_section in cfg:
+        for key, default_val in cfg_values.items():
+            if key in cfg[config_section] and cfg[config_section][key] != '':
+                raw_val = cfg[config_section][key]
+                try:
+                    cfg_values[key] = float(raw_val) if isinstance(default_val, float) else raw_val
+                except ValueError:
+                    cfg_values[key] = raw_val
+    return cfg_values
+
+def filter_by_bounds(pairs: List[Tuple[float, float]], lower_bound: float, upper_bound: float) -> List[Tuple[float, float]]:
+    return [(x, y) for x, y in pairs if lower_bound <= x <= upper_bound]
+
+def find_x_position_for_max_y(pairs: List[Tuple[float, float]], position: str) -> float:
+    if not pairs:
+        raise ValueError('No data within bounds')
+    m = max(y for _, y in pairs)
+    if position == 'first':
+        for x, y in pairs:
+            if y == m:
+                return x
+    else:
+        for x, y in reversed(pairs):
+            if y == m:
+                return x
+    raise RuntimeError('No maximum found')
+
+def normalize(s: str) -> str:
+    return ' '.join(str(s).split()).strip().lower()
+
+def map_columns(stats_path: str, x_req: str, y_req: str, y1_req: Optional[str], y2_req: Optional[str]) -> Tuple[str, str, Optional[str], Optional[str]]:
+    with open(stats_path, 'r', encoding='utf-8', newline='') as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        if not reader.fieldnames:
+            raise ValueError('Requested columns not found in header')
+        hmap = {normalize(h): h for h in reader.fieldnames}
+    x_col = hmap.get(normalize(x_req))
+    y_col = hmap.get(normalize(y_req))
+    if x_col is None or y_col is None:
+        raise ValueError('Requested columns not found in header')
+    y1_col = hmap.get(normalize(y1_req)) if y1_req else None
+    y2_col = hmap.get(normalize(y2_req)) if y2_req else None
+    return x_col, y_col, y1_col, y2_col
+
+def read_tsv_enriched(stats_path: str, x_col: str, y_col: str, y1_col: Optional[str], y2_col: Optional[str]) -> List[Tuple[float, float, Optional[float], Optional[float]]]:
+    with open(stats_path, 'r', encoding='utf-8', newline='') as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        rows = []
+        for row in reader:
+            x = float(row[x_col])
+            y = float(row[y_col])
+            y1 = float(row[y1_col]) if y1_col and row.get(y1_col, '') != '' else None
+            y2 = float(row[y2_col]) if y2_col and row.get(y2_col, '') != '' else None
+            rows.append((x, y, y1, y2))
+        return rows
+
+def get_post_processed_position(config: dict) -> float:
+    x_col, y_col, y1_col, y2_col = map_columns(config['stats_path'], config['x'], config['y'], config.get('y1'), config.get('y2'))
+    y1_lb = float(config['y1_lower_bound']) if y1_col else None
+    y2_lb = float(config['y2_lower_bound']) if y2_col else None
+    data = read_tsv_enriched(config['stats_path'], x_col, y_col, y1_col, y2_col)
+    lower = float(config['lower_bound'])
+    upper = float(config['upper_bound'])
+    bounded = [(x, y, y1, y2) for x, y, y1, y2 in data if lower <= x <= upper]
+    if not bounded:
+        raise ValueError('No data within bounds')
+    ordered = bounded if config['position'] == 'first' else list(reversed(bounded))
+    for x, y, y1, y2 in ordered:
+        if y1_lb is not None and y2_lb is not None and y1 is not None and y2 is not None and y1 >= y1_lb and y2 >= y2_lb:
+            return x
+    xy = [(x, y) for x, y, _, _ in bounded]
+    return find_x_position_for_max_y(xy, config['position'])
+
+def main() -> float:
+    config = load_config(CONFIG_FILE, 'f1_safety_threshold')
+    result = get_post_processed_position(config)
+    print(f"Recommended {config['y']} threshold with bounds {config['lower_bound']}, {config['upper_bound']}: {result}")
+    return result
+
+def ext_main(config: dict) -> float:
+    result = get_post_processed_position(config)
+    print(f"Recommended {config['y']} threshold with bounds {config['lower_bound']}, {config['upper_bound']}: {result}")
+    return result
+
+if __name__ == '__main__':
+    main()
+
+#============
+'''
+[f1_safety_threshold]
+stats_path = stats1.txt
+x = threshold
+y = micro f1
+y1 = micro recall
+y1_lower_bound = 0.7
+y2 = micro precision
+y2_lower_bound = 0.8
+lower_bound = 0.1
+upper_bound = 0.99
+position = last
+
+[f0.5_safety_threshold]
+stats_path = stats1.txt
+x = threshold
+y = micro 0.5
+y1 = micro recall
+y1_lower_bound = 0.7
+y2 = micro precision
+y2_lower_bound = 0.8
+lower_bound = 0.1
+upper_bound = 0.99
+position = last
+'''
