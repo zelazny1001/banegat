@@ -1,0 +1,145 @@
+# annotations.py
+
+import pandas as pd
+import re
+from calendar import month_abbr
+import matplotlib.pyplot as plt
+
+def ordinal(n):
+    if 10 <= n % 100 <= 20:
+        s = 'th'
+    else:
+        s = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f"{n}{s}"
+
+def parse_period(p):
+    m = re.match(r"(\w+)\s+(\d+)(?:st|nd|rd|th)?-(\d+)(?:st|nd|rd|th)?", p)
+    if not m:
+        return None, None, None
+    mon, start, end = m.groups()
+    return mon, int(start), int(end)
+
+def preprocess(df):
+    parsed = df['period'].apply(parse_period)
+    df[['month','start_day','end_day']] = pd.DataFrame(parsed.tolist(), index=df.index)
+    month_to_num = {month_abbr[i]: i for i in range(1, 13)}
+    df['month_num'] = df['month'].map(month_to_num)
+    return df
+
+def granularize_month(month_df):
+    month_df = month_df.sort_values(['start_day','end_day']).reset_index(drop=True)
+    granular_rows = []
+    prev_cum = None
+    prev_end = None
+    for _, row in month_df.iterrows():
+        if row['start_day'] == 1 and prev_cum is not None:
+            diff = row[['T1 FP','T1 FN','T1 TP','T2 FP','T2 FN','T2 TP']] - prev_cum
+            granular_rows.append({
+                'period': f"{row['month']} {ordinal(int(prev_end)+1)}-{ordinal(int(row['end_day']))}",
+                'T1 FP': int(diff['T1 FP']), 'T1 FN': int(diff['T1 FN']), 'T1 TP': int(diff['T1 TP']),
+                'T2 FP': int(diff['T2 FP']), 'T2 FN': int(diff['T2 FN']), 'T2 TP': int(diff['T2 TP']),
+                'month_num': row['month_num'], 'start_day': int(prev_end)+1, 'end_day': int(row['end_day'])
+            })
+            prev_cum = row[['T1 FP','T1 FN','T1 TP','T2 FP','T2 FN','T2 TP']]
+            prev_end = row['end_day']
+        elif row['start_day'] == 1:
+            granular_rows.append({
+                'period': f"{row['month']} {ordinal(int(row['start_day']))}-{ordinal(int(row['end_day']))}",
+                'T1 FP': int(row['T1 FP']), 'T1 FN': int(row['T1 FN']), 'T1 TP': int(row['T1 TP']),
+                'T2 FP': int(row['T2 FP']), 'T2 FN': int(row['T2 FN']), 'T2 TP': int(row['T2 TP']),
+                'month_num': row['month_num'], 'start_day': int(row['start_day']), 'end_day': int(row['end_day'])
+            })
+            prev_cum = row[['T1 FP','T1 FN','T1 TP','T2 FP','T2 FN','T2 TP']]
+            prev_end = row['end_day']
+        else:
+            granular_rows.append({
+                'period': f"{row['month']} {ordinal(int(row['start_day']))}-{ordinal(int(row['end_day']))}",
+                'T1 FP': int(row['T1 FP']), 'T1 FN': int(row['T1 FN']), 'T1 TP': int(row['T1 TP']),
+                'T2 FP': int(row['T2 FP']), 'T2 FN': int(row['T2 FN']), 'T2 TP': int(row['T2 TP']),
+                'month_num': row['month_num'], 'start_day': int(row['start_day']), 'end_day': int(row['end_day'])
+            })
+    return pd.DataFrame(granular_rows)
+
+def granularize_all(df):
+    df = preprocess(df.copy())
+    parts = []
+    for _, m in df.groupby('month_num'):
+        parts.append(granularize_month(m))
+    out = pd.concat(parts, ignore_index=True)
+    out = out.sort_values(['month_num','start_day','end_day']).reset_index(drop=True)
+    return out
+
+def add_disagree_cols(df):
+    df = df.copy()
+    df['T1 disagree'] = df['T1 FP'] + df['T1 FN']
+    df['T2 disagree'] = df['T2 FP'] + df['T2 FN']
+    return df
+
+def save_csv(df, path):
+    cols = ['period','T1 FP','T1 FN','T1 TP','T2 FP','T2 FN','T2 TP','T1 disagree','T2 disagree']
+    df[cols].to_csv(path, index=False)
+
+def plot_points(x_labels, y1, y2, title, ylabel, path_png):
+    plt.figure()
+    x = range(len(x_labels))
+    plt.plot(x, y1, linestyle='None', marker='o', markersize=4, color='blue', label='Tester 1')
+    plt.plot(x, y2, linestyle='None', marker='o', markersize=4, color='red', label='Tester 2')
+    plt.xticks(x, x_labels, rotation=75, ha='right')
+    plt.xlabel('Interval')
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(path_png)
+    plt.close()
+
+def main():
+    df_raw = pd.read_csv("j:/projects/sheet-logic/annotators/annotators.csv")
+    granular = granularize_all(df_raw)
+    with_disagree = add_disagree_cols(granular)
+    save_csv(with_disagree, "j:/projects/sheet-logic/annotators/granular2.csv")
+    # plot_points(with_disagree['period'].tolist(), with_disagree['T1 disagree'].tolist(), with_disagree['T2 disagree'].tolist(), "Disagree", "Count", "disagree_points.png")
+    # plot_points(with_disagree['period'].tolist(), with_disagree['T1 FP'].tolist(), with_disagree['T2 FP'].tolist(), "FP Difference", "FP Count", "fp_difference_points.png")
+    # plot_points(with_disagree['period'].tolist(), with_disagree['T1 FN'].tolist(), with_disagree['T2 FN'].tolist(), "FN Difference", "FN Count", "fn_difference_points.png")
+    # plot_points(with_disagree['period'].tolist(), with_disagree['T1 TP'].tolist(), with_disagree['T2 TP'].tolist(), "TP Difference", "TP Count", "tp_difference_points.png")
+
+if __name__ == "__main__":
+    main()
+
+#========= input =================================
+# period,T1 FP,T1 FN,T1 TP,T2 FP,T2 FN,T2 TP
+# May 1st-5th,5,0,21,5,0,21
+# May 6th-10th,10,1,10,5,1,15
+# May 12th-16th,10,0,18,2,6,26
+# May 17th-20th,10,0,15,0,0,25
+# Jun 1st-5th,8,2,23,4,1,27
+# Jun 6th-10th,14,0,23,9,3,28
+# Jun 11th-17th,12,0,19,10,2,21
+# Jun 20th-25th,19,0,25,17,2,27
+# Jun 26th-30th,21,3,24,17,10,28
+# Jul 1st-5th,16,1,24,14,1,26
+# Jul 6th-10th,12,1,27,10,5,28
+# Jul 1st-17th,40,2,86,33,9,93
+# Jul 1st-22nd,55,2,129,48,12,136
+# Jul 1st-31st,81,4,178,71,17,188
+# Aug 1st-5th,18,0,37,27,3,28
+# Aug 1st-10th,31,1,79,42,5,68
+
+#========== output ==========
+# period	T1 FP	T1 FN	T1 TP	T2 FP	T2 FN	T2 TP	T1 disagree	T2 disagree
+# May 1st-5th	5	0	21	5	0	21	5	5
+# May 6th-10th	10	1	10	5	1	15	11	6
+# May 12th-16th	10	0	18	2	6	26	10	8
+# May 17th-20th	10	0	15	0	0	25	10	0
+# Jun 1st-5th	8	2	23	4	1	27	10	5
+# Jun 6th-10th	14	0	23	9	3	28	14	12
+# Jun 11th-17th	12	0	19	10	2	21	12	12
+# Jun 20th-25th	19	0	25	17	2	27	19	19
+# Jun 26th-30th	21	3	24	17	10	28	24	27
+# Jul 1st-5th	16	1	24	14	1	26	17	15
+# Jul 6th-10th	12	1	27	10	5	28	13	15
+# Jul 6th-17th	24	1	62	19	8	67	25	27
+# Jul 18th-22nd	15	0	43	15	3	43	15	18
+# Jul 23rd-31st	26	2	49	23	5	52	28	28
+# Aug 1st-5th	18	0	37	27	3	28	18	30
+# Aug 6th-10th	13	1	42	15	2	40	14	17
