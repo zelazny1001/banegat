@@ -1,4 +1,4 @@
-# standalone_asr_metrics_calc.py
+# asr_metrics_calc_standalone.py
 # ingest all ASR_*.xlsx spreadsheets in ROOT_DIR and write per-file metrics & a consolidated monthly report
 
 from __future__ import annotations
@@ -13,22 +13,15 @@ from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Border, Side
 
-from nltk_jiwer_utils import (
-    get_jiwer_result,
-    get_nltk_result,
-    get_wer_from_json,
-    get_gt_tok_count_from_json
-)
-
 thin_side   = Side(border_style="thin", color="D3D3D3")
 thin_border = Border(top=thin_side, bottom=thin_side, left=thin_side, right=thin_side)
 
 CODE_IS_BEING_TESTED: bool = True
 
 # processing parameters
-ROOT_DIR: str = "../asr-april-2025-data/"
+ROOT_DIR: str = "j:/projects/sheet-logic/asr-april-2025"
 SPREADSHEET_PREFIX: str = "ASR"
-WORKSHEET_PREFIX: str = "ASR"  # input worksheet name starts with this
+WORKSHEET_PREFIX: str = "ASR"  # input worksheet name startswith this
 
 DO_MONTHLY_CONSOLIDATION = True  # also build monthly consolidated metrics
 
@@ -44,12 +37,9 @@ METADATA_COL_NAME: str           = "metadata"
 ENTIRE_COL_NAME: str             = "entire"
 GT_SECTION_TEXT_COL_NAME: str    = "gt section"
 MODEL_SECTION_TEXT_COL_NAME: str = "model text"
-GT_TOK_COL_NAME: str             = "GT Tok Count"
 
 # metrics computation
 NUMBER_OF_SECTIONS: int          = 5
-USE_LOCAL_WER_COMPUTE            = True
-USE_NLTK                         = False
 WER_POST_ENDPOINT: str           = "https://wer_host:3281/word_error_rate"
 
 # summary worksheet
@@ -71,7 +61,6 @@ def list_input_spreadsheets(root_dir: str) -> list[str]:
             and not f.endswith("_monthly_metrics.xlsx")
         )
     )
-
 
 
 def get_name_of_results_spreadsheet(input_path: str) -> str:
@@ -119,12 +108,12 @@ def write_header(ws: Worksheet) -> None:
         GT_SECTION_TEXT_COL_NAME,
         MODEL_SECTION_TEXT_COL_NAME,
         "WER",
-        GT_TOK_COL_NAME
+        HALLUCINATION_COL_NAME
     ]
     for idx, title in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=idx, value=title)
         cell.font = Font(name="Aptos", size=9, bold=True)
-        cell.alignment = Alignment(horizontal="left", vertical="center")
+        cell.alignment = Alignment("left", "center")
     ws.freeze_panes = "A2"
 
 
@@ -136,15 +125,14 @@ def write_metrics_row(
     gt_text: str,
     model_text: str,
     wer: float,
-    is_entire: bool = False,
-    gt_tok_count: int | None = None
-) -> None:
+    is_entire: bool = False
+) -> int:
     row = ws.max_row + 1
     body_font  = Font(name="Aptos", size=9)
-    body_align = Alignment(horizontal="left", vertical="center")
-    fill = PatternFill(patternType="solid", fgColor="00FFFF") if is_entire else None
+    body_align = Alignment("left", "center")
+    fill = PatternFill("solid", fgColor="00FFFF") if is_entire else None
 
-    vals = (metadata, session_id, section, gt_text, model_text, wer)
+    vals = (metadata, session_id, section, gt_text, model_text, wer, None)
     for col_idx, v in enumerate(vals, start=1):
         cell = ws.cell(row=row, column=col_idx, value=v)
         cell.font = body_font
@@ -154,60 +142,49 @@ def write_metrics_row(
             cell.border = thin_border
         if col_idx == 6:
             cell.number_format = "0.00"
-    gt_col = len(vals) + 1
-    gcell = ws.cell(row=row, column=gt_col, value=gt_tok_count if gt_tok_count is not None else None)
-    gcell.font = body_font
-    gcell.alignment = body_align
-    if gt_tok_count is not None:
-        gcell.number_format = "0"
-    if fill:
-        gcell.fill = fill
-        gcell.border = thin_border
+    return row
+
+
+def count_hallucinations_for_block(block: list[tuple[str, str]], sid: str, input_ws: Worksheet) -> int:
+    hdr = [c.value for c in input_ws[1]]
+    try:
+        hi = hdr.index(HALLUCINATION_COL_NAME)
+    except ValueError:
+        return 0
+    raw_values = {raw for raw, _ in block}
+    return sum(
+        1
+        for row in input_ws.iter_rows(min_row=2, values_only=True)
+        if row[0] == sid and row[1] in raw_values and row[hi]
+    )
+
 
 def process_sessions(input_ws: Worksheet, metrics_ws: Worksheet, metadata: str) -> None:
-    # only keep rows whose session_id (col A) is non-blank after stripping whitespace
     data = [
         row
         for row in input_ws.iter_rows(min_row=2, values_only=True)
         if str(row[0] or "").strip()
     ]
-
     if not data:
         print(f"No session_id found – skipping process_sessions for {metadata}")
         return
 
-    # group rows by cleaned session_id
     sessions: dict[str, list[tuple[str, str]]] = {}
     for sid, raw, gt, *rest in data:
         sid = str(sid).strip()
         sessions.setdefault(sid, []).append((raw, gt))
 
-    CUMULATIVE_ENTIRE_SECTION_GT_TOKENS = 0;
     for sid, entries in sessions.items():
-        print(f"preprocessing session: {sid}")
-        # entire-session metrics
+        # ENTIRE
         gt_all  = " ".join(preprocess(gt)  for _, gt in entries)
         raw_all = " ".join(preprocess(raw) for raw, _ in entries)
-        gt_tok_count = None
-        if USE_LOCAL_WER_COMPUTE:
-            if USE_NLTK:
-                nltk_result = get_nltk_result(gt_all, raw_all)
-                nltk_wer = get_wer_from_json(nltk_result)
-                wer_ent = nltk_wer
-                write_metrics_row(metrics_ws, metadata, sid, ENTIRE_COL_NAME, gt_all, raw_all, wer_ent, True, gt_tok_count)
-            else:
-                jiwer_result = get_jiwer_result(gt_all, raw_all)
-                jiwer_wer = get_wer_from_json(jiwer_result)
-                wer_ent = jiwer_wer
-                if wer_ent <= 100:
-                    gt_tok_count = get_gt_tok_count_from_json(jiwer_result)
-                    CUMULATIVE_ENTIRE_SECTION_GT_TOKENS = CUMULATIVE_ENTIRE_SECTION_GT_TOKENS + gt_tok_count
-                    print(f"cumulative gt tok count: {CUMULATIVE_ENTIRE_SECTION_GT_TOKENS}")
-                    write_metrics_row(metrics_ws, metadata, sid, ENTIRE_COL_NAME, gt_all, raw_all, wer_ent, True, gt_tok_count)
-        else:
-            wer_ent = get_wer_from_api(WER_POST_ENDPOINT, gt_all, raw_all)
-            write_metrics_row(metrics_ws, metadata, sid, ENTIRE_COL_NAME, gt_all, raw_all, wer_ent, True, gt_tok_count)
-        # sectioned metrics
+        wer_ent = get_wer_from_api(WER_POST_ENDPOINT, gt_all, raw_all)
+        row_ent = write_metrics_row(metrics_ws, metadata, sid, ENTIRE_COL_NAME, gt_all, raw_all, wer_ent, True)
+
+        h_ent = count_hallucinations_for_block(entries, sid, input_ws)
+        metrics_ws.cell(row_ent, 7, h_ent)
+
+        # Sections
         total = len(entries)
         base  = total // NUMBER_OF_SECTIONS
         rem   = total % NUMBER_OF_SECTIONS
@@ -216,107 +193,35 @@ def process_sessions(input_ws: Worksheet, metrics_ws: Worksheet, metadata: str) 
             cnt = base + (1 if sec <= rem else 0)
             if cnt == 0:
                 break
-            block  = entries[start : start + cnt]
+            block  = entries[start:start+cnt]
             start += cnt
             gt_blk = " ".join(preprocess(gt)  for _, gt in block)
             raw_blk= " ".join(preprocess(raw) for raw, _ in block)
-            if USE_LOCAL_WER_COMPUTE:
-                if USE_NLTK:
-                    nltk_result = get_nltk_result(gt_blk, raw_blk)
-                    nltk_wer = get_wer_from_json(nltk_result)
-                    wer_s = nltk_wer
-                    write_metrics_row(metrics_ws, metadata, sid, sec, gt_blk, raw_blk, wer_s, False)
-                else:
-                    jiwer_result = get_jiwer_result(gt_blk, raw_blk)
-                    jiwer_wer = get_wer_from_json(jiwer_result)
-                    wer_s = jiwer_wer
-                    if wer_s <= 100:
-                        write_metrics_row(metrics_ws, metadata, sid, sec, gt_blk, raw_blk, wer_s, False)
-            else:
-                wer_s = get_wer_from_api(WER_POST_ENDPOINT, gt_blk, raw_blk)
-                write_metrics_row(metrics_ws, metadata, sid, sec, gt_blk, raw_blk, wer_s, False)
+            wer_s  = get_wer_from_api(WER_POST_ENDPOINT, gt_blk, raw_blk)
+            row_s  = write_metrics_row(metrics_ws, metadata, sid, sec, gt_blk, raw_blk, wer_s)
+            h_sec = count_hallucinations_for_block(block, sid, input_ws)
+            metrics_ws.cell(row_s, 7, h_sec)
+
 
 def style_columns(ws: Worksheet) -> None:
-    widths = {1:27, 2:65, 3:9, 4:63, 5:63, 6:9, 7:12, 8:9}
+    widths = {1:27, 2:65, 3:9, 4:63, 5:63, 6:9, 7:12}
     for col, w in widths.items():
         ws.column_dimensions[get_column_letter(col)].width = w
-    ws.auto_filter.ref = f"A1:{get_column_letter(max(widths.keys()))}{ws.max_row}"
-
-def count_hallucinations(input_ws: Worksheet, sid: str) -> int:
-    hdr = [c.value for c in input_ws[1]]
-    try:
-        hi = hdr.index(HALLUCINATION_COL_NAME)
-    except ValueError:
-        return 0
-    return sum(
-        1
-        for row in input_ws.iter_rows(min_row=2, values_only=True)
-        if row[0] == sid and row[hi]
-    )
+    ws.auto_filter.ref = f"A1:G{ws.max_row}"
 
 
-def add_hallucination_column(metrics_ws: Worksheet, input_ws: Worksheet) -> None:
-    fill = PatternFill(patternType="solid", fgColor="00FFFF")
+def calculate_hallucination_stats(metrics_ws: Worksheet) -> tuple[int, float]:
     hdr = [c.value for c in metrics_ws[1]]
-    try:
-        gt_index = hdr.index(GT_TOK_COL_NAME)
-        insert_at = gt_index + 1  # 1-based column index where we insert hallucination (before GT Tok)
-        metrics_ws.insert_cols(insert_at)
-        col = insert_at
-        metrics_ws.cell(1, col, HALLUCINATION_COL_NAME).font = Font(name="Aptos", size=9, bold=True)
-        metrics_ws.cell(1, col).alignment = Alignment(horizontal="left", vertical="center")
-        for r in range(2, metrics_ws.max_row + 1):
-            if metrics_ws.cell(r, 3).value == ENTIRE_COL_NAME:
-                sid = metrics_ws.cell(r, 2).value
-                v = count_hallucinations(input_ws, sid)
-                c = metrics_ws.cell(r, col, v)
-                c.font = Font(name="Aptos", size=9)
-                c.alignment = Alignment(horizontal="left", vertical="center")
-                c.fill = fill
-                c.border = thin_border
-            else:
-                metrics_ws.cell(r, col, None).font = Font(name="Aptos", size=9)
-    except ValueError:
-        col = metrics_ws.max_column + 1
-        metrics_ws.cell(1, col, HALLUCINATION_COL_NAME).font = Font(name="Aptos", size=9, bold=True)
-        for r in range(2, metrics_ws.max_row + 1):
-            if metrics_ws.cell(r, 3).value == ENTIRE_COL_NAME:
-                sid = metrics_ws.cell(r, 2).value
-                v = count_hallucinations(input_ws, sid)
-                c = metrics_ws.cell(r, col, v)
-                c.font = Font(name="Aptos", size=9)
-                c.alignment = Alignment(horizontal="left", vertical="center")
-                c.fill = fill
-                c.border = thin_border
-            else:
-                metrics_ws.cell(r, col, None).font = Font(name="Aptos", size=9)
-    metrics_ws.column_dimensions[get_column_letter(col)].width = 12
-    metrics_ws.auto_filter.ref = f"A1:{get_column_letter(col)}{metrics_ws.max_row}"
-
-def calculate_hallucination_stats(metrics_ws: Worksheet) -> tuple[int, int, float]:
-    hdr = [c.value for c in metrics_ws[1]]
-    try:
-        hi = hdr.index(HALLUCINATION_COL_NAME)
-    except ValueError:
-        return 0, 0, 0.0
-    try:
-        gi = hdr.index(GT_TOK_COL_NAME)
-    except ValueError:
-        return 0, 0, 0.0
-    halluc_vals = [
+    hi = hdr.index(HALLUCINATION_COL_NAME)
+    vals = [
         row[hi]
         for row in metrics_ws.iter_rows(min_row=2, values_only=True)
         if row[2] == ENTIRE_COL_NAME and isinstance(row[hi], (int, float))
     ]
-    gt_vals = [
-        row[gi]
-        for row in metrics_ws.iter_rows(min_row=2, values_only=True)
-        if row[2] == ENTIRE_COL_NAME and isinstance(row[gi], (int, float))
-    ]
-    total_h = sum(halluc_vals)
-    total_gt = sum(gt_vals)
-    avg = round(total_h / total_gt, 5) if total_gt else 0.0
-    return total_h, total_gt, avg
+    total = sum(vals)
+    cnt   = len(vals)
+    return total, (total / cnt if cnt else 0.0)
+
 
 def calculate_mean_wer(metrics_ws: Worksheet) -> float:
     vals = [
@@ -338,30 +243,31 @@ def write_summary(metrics_ws: Worksheet, summary_ws: Worksheet) -> None:
         METADATA_COL_NAME,
         AVERAGE_WER_COL_NAME,
         SESSION_COUNT_COL_NAME,
-        GT_TOK_COL_NAME,
         HALLUCINATION_COUNT_COL_NAME,
         HALLUCINATION_AVG_COL_NAME
     ]
     for i, title in enumerate(headers, start=1):
         c = summary_ws.cell(1, i, title)
-        c.font = Font(name="Aptos", size=9, bold=True)
-        c.alignment = Alignment(horizontal="left", vertical="center")
+        c.font = Font(name="Aptos", size=11, bold=True)
+        c.alignment = Alignment("left", "center")
 
     meta = metrics_ws.cell(2, 1).value
     mean = calculate_mean_wer(metrics_ws)
-    total_h, total_gt, avg_h = calculate_hallucination_stats(metrics_ws)
+    total_h, avg_h = calculate_hallucination_stats(metrics_ws)
     sessions = sum(
         1
         for r in metrics_ws.iter_rows(min_row=2, values_only=True)
         if r[2] == ENTIRE_COL_NAME
     )
-    summary_ws.append([meta, mean, sessions, total_gt, total_h, round(avg_h, 5)])
+
+    summary_ws.append([meta, mean, sessions, total_h, round(avg_h, 2)])
     summary_ws.cell(2, 2).number_format = "0.00"
-    summary_ws.cell(2, 6).number_format = "0.00000"
+
     for c in summary_ws[2]:
         c.font = Font(name="Aptos", size=11)
-        c.alignment = Alignment(horizontal="left", vertical="center")
-    col_widths = {"A":30, "B":13, "C":16, "D":9, "E":22, "F":19}
+        c.alignment = Alignment("left", "center")
+
+    col_widths = {"A":30, "B":13, "C":16, "D":22, "E":19}
     for col, w in col_widths.items():
         summary_ws.column_dimensions[col].width = w
 
@@ -409,27 +315,24 @@ def create_monthly_worksheet(
             mon_metrics.append(row)
         first = False
 
-    # style and format WER
     for c in mon_metrics[1]:
         c.font = Font(name="Aptos", size=9, bold=True)
-        c.alignment = Alignment(horizontal="left", vertical="center")
+        c.alignment = Alignment("left", "center")
     mon_metrics.freeze_panes = "A2"
     mon_metrics.auto_filter.ref = f"A1:{get_column_letter(mon_metrics.max_column)}{mon_metrics.max_row}"
-    for col, w in {"A":27, "B":65, "C":9, "D":63, "E":63, "F":9, "G":9}.items():
+    for col, w in {"A":27, "B":65, "C":9, "D":63, "E":63, "F":8, "G":12}.items():
         mon_metrics.column_dimensions[col].width = w
     for r in mon_metrics.iter_rows(min_row=2):
         cell = r[5]
         cell.number_format = "0.00"
 
-    # highlight ENTIRE rows
-    fill = PatternFill(patternType="solid", fgColor="00FFFF")
+    fill = PatternFill("solid", fgColor="00FFFF")
     for row in mon_metrics.iter_rows(min_row=2):
         if row[2].value == ENTIRE_COL_NAME:
             for c in row:
                 c.fill = fill
                 c.border = thin_border
 
-    # aggregate summary
     mon_sum = wb.create_sheet(SUMMARY_WORKSHEET_NAME)
     first = True
     for mf in metrics_files:
@@ -443,30 +346,28 @@ def create_monthly_worksheet(
 
     for c in mon_sum[1]:
         c.font = Font(name="Aptos", size=9, bold=True)
-        c.alignment = Alignment(horizontal="left", vertical="center")
+        c.alignment = Alignment("left", "center")
     mon_sum.freeze_panes = "A2"
     mon_sum.auto_filter.ref = f"A1:{get_column_letter(mon_sum.max_column)}{mon_sum.max_row}"
-    for col, w in {"A":36, "B":11, "C":14, "D":19, "E":17, "F":9}.items():
+    for col, w in {"A":36, "B":11, "C":14, "D":19, "E":17}.items():
         mon_sum.column_dimensions[col].width = w
 
-    # consolidated summary row
-    mon_sum.append([None] * 6)
+    mon_sum.append([None] * 5)
     entries = list(mon_sum.iter_rows(min_row=2, max_row=1+len(metrics_files), values_only=True))
     avg_wers = [r[1] for r in entries]
     num_sess = sum(int(r[2]) for r in entries)
-    total_gt = sum(int(r[3]) for r in entries)
-    total_h  = sum(int(r[4]) for r in entries)
-    avg_h    = round(total_h / total_gt, 5) if total_gt else 0.0
+    total_h  = sum(int(r[3]) for r in entries)
+    avg_h    = round(total_h / num_sess, 2) if num_sess else 0.0
+
     meta_lbl = f"{prefix}_{earliest}thru{latest}_{year}"
     mon_sum.append([meta_lbl,
                     round(sum(avg_wers) / len(avg_wers), 2) if avg_wers else 0.0,
                     num_sess,
-                    total_gt,
                     total_h,
                     avg_h])
 
     last = mon_sum.max_row
-    fill_con = PatternFill(patternType="solid", fgColor="00FFFF")
+    fill_con = PatternFill("solid", fgColor="00FFFF")
     for row in mon_sum.iter_rows(min_row=1, max_row=last):
         for c in row:
             c.font = Font(name="Aptos", size=9, bold=(c.row == 1))
@@ -497,13 +398,11 @@ def main() -> None:
         for row in in_ws.iter_rows(values_only=True):
             copy_ws.append(row)
 
-        # set widths on the copied original sheet
-        copy_ws.column_dimensions['A'].width = 69  # session_id
-        copy_ws.column_dimensions['B'].width = 35  # raw_transcript
-        copy_ws.column_dimensions['C'].width = 35  # Ground Truth Transcript
-        copy_ws.column_dimensions['D'].width = 12  # Hallucination
+        copy_ws.column_dimensions['A'].width = 69
+        copy_ws.column_dimensions['B'].width = 35
+        copy_ws.column_dimensions['C'].width = 35
+        copy_ws.column_dimensions['D'].width = 12
 
-        # freeze header row, add filters, set fonts
         copy_ws.freeze_panes = "A2"
         copy_ws.auto_filter.ref = f"A1:D{copy_ws.max_row}"
         for row in copy_ws.iter_rows(min_row=1, max_row=copy_ws.max_row, min_col=1, max_col=4):
@@ -516,7 +415,6 @@ def main() -> None:
         process_sessions(in_ws, mws, md)
 
         style_columns(mws)
-        add_hallucination_column(mws, in_ws)
 
         sws = add_summary_sheet(wb_out)
         write_summary(mws, sws)
@@ -528,6 +426,7 @@ def main() -> None:
     if DO_MONTHLY_CONSOLIDATION and metrics_files:
         mon_path = create_monthly_worksheet(ROOT_DIR, metrics_files, SPREADSHEET_PREFIX)
         print(f"Saved monthly consolidated metrics to {mon_path}")
+
 
 if __name__ == "__main__":
     main()
