@@ -19,7 +19,7 @@ thin_border = Border(top=thin_side, bottom=thin_side, left=thin_side, right=thin
 CODE_IS_BEING_TESTED: bool = True
 
 # processing parameters
-ROOT_DIR: str = "j:/projects/sheet-logic/asr-april-2025"
+ROOT_DIR: str = "j:/projects/sheet-logic/asr-april-2025-data/"
 SPREADSHEET_PREFIX: str = "ASR"
 WORKSHEET_PREFIX: str = "ASR"  # input worksheet name startswith this
 
@@ -145,18 +145,18 @@ def write_metrics_row(
     return row
 
 
-def count_hallucinations_for_block(block: list[tuple[str, str]], sid: str, input_ws: Worksheet) -> int:
+def get_hallucination_flags(input_ws: Worksheet, sid: str) -> list[int]:
+    """Return hallucination flags (0/1) for rows of a given session_id, in order."""
     hdr = [c.value for c in input_ws[1]]
     try:
         hi = hdr.index(HALLUCINATION_COL_NAME)
     except ValueError:
-        return 0
-    raw_values = {raw for raw, _ in block}
-    return sum(
-        1
-        for row in input_ws.iter_rows(min_row=2, values_only=True)
-        if row[0] == sid and row[1] in raw_values and row[hi]
-    )
+        return []
+    flags = []
+    for row in input_ws.iter_rows(min_row=2, values_only=True):
+        if row[0] == sid:
+            flags.append(1 if row[hi] else 0)
+    return flags
 
 
 def process_sessions(input_ws: Worksheet, metrics_ws: Worksheet, metadata: str) -> None:
@@ -175,14 +175,14 @@ def process_sessions(input_ws: Worksheet, metrics_ws: Worksheet, metadata: str) 
         sessions.setdefault(sid, []).append((raw, gt))
 
     for sid, entries in sessions.items():
+        halluc_flags = get_hallucination_flags(input_ws, sid)
+
         # ENTIRE
         gt_all  = " ".join(preprocess(gt)  for _, gt in entries)
         raw_all = " ".join(preprocess(raw) for raw, _ in entries)
         wer_ent = get_wer_from_api(WER_POST_ENDPOINT, gt_all, raw_all)
         row_ent = write_metrics_row(metrics_ws, metadata, sid, ENTIRE_COL_NAME, gt_all, raw_all, wer_ent, True)
-
-        h_ent = count_hallucinations_for_block(entries, sid, input_ws)
-        metrics_ws.cell(row_ent, 7, h_ent)
+        metrics_ws.cell(row_ent, 7, sum(halluc_flags))
 
         # Sections
         total = len(entries)
@@ -194,13 +194,13 @@ def process_sessions(input_ws: Worksheet, metrics_ws: Worksheet, metadata: str) 
             if cnt == 0:
                 break
             block  = entries[start:start+cnt]
+            flags  = halluc_flags[start:start+cnt]
             start += cnt
             gt_blk = " ".join(preprocess(gt)  for _, gt in block)
             raw_blk= " ".join(preprocess(raw) for raw, _ in block)
             wer_s  = get_wer_from_api(WER_POST_ENDPOINT, gt_blk, raw_blk)
             row_s  = write_metrics_row(metrics_ws, metadata, sid, sec, gt_blk, raw_blk, wer_s)
-            h_sec = count_hallucinations_for_block(block, sid, input_ws)
-            metrics_ws.cell(row_s, 7, h_sec)
+            metrics_ws.cell(row_s, 7, sum(flags))
 
 
 def style_columns(ws: Worksheet) -> None:
