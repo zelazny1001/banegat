@@ -14,17 +14,18 @@ from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Border, Side
 
-thin_side   = Side(border_style="thin", color="D3D3D3")
-thin_border = Border(top=thin_side, bottom=thin_side, left=thin_side, right=thin_side)
+THIN_SIDE   = Side(border_style="thin", color="D3D3D3")
+THIN_BORDER = Border(top=THIN_SIDE, bottom=THIN_SIDE, left=THIN_SIDE, right=THIN_SIDE)
+METRICS_COL_WIDTHS = {"A": 30, "B": 13, "C": 16, "D": 22}
 
 CODE_IS_BEING_TESTED: bool = True
 CALL_LEVEL_BKGND_COLOR   = "00FFFF"
-SAMPLE_LEVEL_BKGND_COLOR = "CFE8D7"
-ROOT_DIR: str = "j:/projects/sheet-logic/asr-april-2025-data-2/"
+SAMPLE_LEVEL_BKGND_COLOR = "FFFFFF" # "CFE8D7"
+ROOT_DIR: str = "j:/projects/sheet-logic/asr-april-2025-data/" #"j:/projects/sheet-logic/asr-april-2025-data-agent-cust/"
 SPREADSHEET_PREFIX: str = "ASR"
 WORKSHEET_PREFIX: str = "ASR"
 DO_MONTHLY_CONSOLIDATION = True
-CALL_LEVEL_GRANULARITY: bool = False
+CALL_LEVEL_GRANULARITY: bool = True
 
 SESSION_ID_COL_NAME: str         = "session_id"
 RAW_TRANSCRIPT_COL_NAME: str     = "raw_transcript"
@@ -54,7 +55,6 @@ HALLUCINATION_AVG_COL_NAME:   str         = "Hallucination Avg"
 SAMPLE_SUMMARY_WORKSHEET_NAME: str        = "Sample Summary"
 AVG_HALLUCINATION_PERCENT_COL_NAME: str   = "Avg Hallucination %"
 
-
 def get_column_index_map(ws: Worksheet) -> dict[str, int]:
     return {c.value: idx for idx, c in enumerate(ws[1], start=1)}
 
@@ -65,6 +65,34 @@ def debug_print_column_map(ws: Worksheet) -> None:
     tuple_idx = excel_idx - 1
     col_letter = get_column_letter(excel_idx)
     print(f"{name:30s}  {excel_idx:2d} ({col_letter})  tuple[{tuple_idx}]")
+
+def style_summary_worksheet(ws):
+  """
+  Apply consistent styling to summary or sample summary sheets:
+  - Freeze header
+  - Set column widths
+  - Apply header font/alignment (row 1)
+  - Apply data row style and fill (row 2)
+  """
+  ws.freeze_panes = "A2"
+  ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+
+  # Header (row 1)
+  for cell in ws[1]:
+    cell.font = Font(name="Aptos", size=9, bold=True)
+    cell.alignment = Alignment("left", "center")
+
+  # Data row (row 2)
+  fill_color = CALL_LEVEL_BKGND_COLOR if CALL_LEVEL_GRANULARITY else SAMPLE_LEVEL_BKGND_COLOR
+  for cell in ws[2]:
+    cell.font = Font(name="Aptos", size=9)
+    cell.alignment = Alignment("left", "center")
+    cell.fill = PatternFill("solid", fgColor=fill_color)
+    cell.border = THIN_BORDER
+
+  # Set column widths
+  for col_letter, width in METRICS_COL_WIDTHS.items():
+    ws.column_dimensions[col_letter].width = width
 
 def list_input_spreadsheets(root_dir: str) -> list[str]:
     return sorted(
@@ -155,7 +183,7 @@ def write_metrics_row(
         cell.font = body_font
         cell.alignment = body_align
         cell.fill = fill
-        cell.border = thin_border
+        cell.border = THIN_BORDER
         if ws.cell(1, col_idx).value == WER_COL_NAME:
             cell.number_format = "0.00"
         if ws.cell(1, col_idx).value == HALLUCINATION_PERCENT_COL_NAME:
@@ -285,10 +313,81 @@ def write_summary(metrics_ws: Worksheet, summary_ws: Worksheet) -> None:
     for col, w in col_widths.items():
         summary_ws.column_dimensions[col].width = w
 
+import re
+
+def get_normalized_metadata(rows, meta_index, prefix):
+    metas = [r[meta_index] for r in rows if r[meta_index]]
+    parts = [re.search(r'_(\d{4})thru(\d{4})_(\d{4})', m) for m in metas if m]
+    earliest = min(p.group(1) for p in parts if p)
+    latest = max(p.group(2) for p in parts if p)
+    year = parts[0].group(3) if parts else "????"
+    return f"{prefix}_{earliest}thru{latest}_{year}"
+
 def add_sample_summary_sheet(wb: Workbook, metrics_ws: Worksheet) -> None:
+  if SAMPLE_SUMMARY_WORKSHEET_NAME in wb.sheetnames:
+    del wb[SAMPLE_SUMMARY_WORKSHEET_NAME]
+  ws = wb.create_sheet(SAMPLE_SUMMARY_WORKSHEET_NAME)
+  headers = [
+    METADATA_COL_NAME,
+    AVERAGE_WER_COL_NAME,
+    SESSION_COUNT_COL_NAME,
+    AVG_HALLUCINATION_PERCENT_COL_NAME
+  ]
+  for i, title in enumerate(headers, start=1):
+    c = ws.cell(1, i, title)
+    c.font = Font(name="Aptos", size=9, bold=True)
+    c.alignment = Alignment("left", "center")
+
+  header_map = get_column_index_map(metrics_ws)
+  rows = list(metrics_ws.iter_rows(min_row=2, values_only=True))
+
+  wer_index = header_map[WER_COL_NAME] - 1
+  hallucination_index = header_map[HALLUCINATION_PERCENT_COL_NAME] - 1
+  section_index = header_map[SECTION_COL_NAME] - 1
+  meta_index = header_map[METADATA_COL_NAME] - 1
+
+  if CALL_LEVEL_GRANULARITY:
+    wer_vals = [r[wer_index] for r in rows if
+                r[section_index] == ENTIRE_COL_NAME and isinstance(r[wer_index], (int, float))]
+    halluc_vals = [r[hallucination_index] for r in rows if
+                   r[section_index] == ENTIRE_COL_NAME and isinstance(r[hallucination_index], (int, float))]
+  else:
+    wer_vals = [r[wer_index] for r in rows if
+                r[section_index] != ENTIRE_COL_NAME and isinstance(r[wer_index], (int, float))]
+    halluc_vals = [r[hallucination_index] for r in rows if
+                   r[section_index] != ENTIRE_COL_NAME and isinstance(r[hallucination_index], (int, float))]
+
+  avg_wer = sum(wer_vals) / len(wer_vals) if wer_vals else 0.0
+  avg_hp = sum(halluc_vals) / len(halluc_vals) if halluc_vals else 0.0
+
+  metas = [r[meta_index] for r in rows if r[meta_index]]
+  parts = [re.search(r'_(\d{4})thru(\d{4})_(\d{4})', m) for m in metas if m]
+  earliest = min(p.group(1) for p in parts if p)
+  latest = max(p.group(2) for p in parts if p)
+  year = parts[0].group(3) if parts else "????"
+  meta = f"{SPREADSHEET_PREFIX}_{earliest}thru{latest}_{year}"
+
+  num_sessions = sum(1 for r in rows if r[section_index] == ENTIRE_COL_NAME)
+
+  summary_vals = [meta, avg_wer, num_sessions, avg_hp]
+  for i, val in enumerate(summary_vals, start=1):
+    c = ws.cell(2, i, val)
+    c.font = Font(name="Aptos", size=9)
+    c.alignment = Alignment("left", "center")
+    c.fill = PatternFill(
+      "solid",
+      fgColor=CALL_LEVEL_BKGND_COLOR if CALL_LEVEL_GRANULARITY else SAMPLE_LEVEL_BKGND_COLOR
+    )
+    c.border = THIN_BORDER
+
+  col_widths = {"A": 30, "B": 13, "C": 16, "D": 22}
+  for col, w in col_widths.items():
+    ws.column_dimensions[col].width = w
+
+def OLD_add_sample_summary_sheet(wb: Workbook, metrics_ws: Worksheet) -> None:
     if SAMPLE_SUMMARY_WORKSHEET_NAME in wb.sheetnames:
         del wb[SAMPLE_SUMMARY_WORKSHEET_NAME]
-    ws = wb.create_sheet(SAMPLE_SUMMARY_WORKSHEET_NAME)
+    worksheet = wb.create_sheet(SAMPLE_SUMMARY_WORKSHEET_NAME)
     headers = [
         METADATA_COL_NAME,
         AVERAGE_WER_COL_NAME,
@@ -296,40 +395,41 @@ def add_sample_summary_sheet(wb: Workbook, metrics_ws: Worksheet) -> None:
         AVG_HALLUCINATION_PERCENT_COL_NAME
     ]
     for i, title in enumerate(headers, start=1):
-        c = ws.cell(1, i, title)
+        c = worksheet.cell(1, i, title)
         c.font = Font(name="Aptos", size=9, bold=True)
         c.alignment = Alignment("left", "center")
-      
-    # ws.append([None] * len(headers)) # use to append a blank row after the header if required
 
-    rows = list(metrics_ws.iter_rows(min_row=2, values_only=True))
-    hdr_map = get_column_index_map(metrics_ws)
-    wi = hdr_map[WER_COL_NAME] - 1
-    hi = hdr_map[HALLUCINATION_PERCENT_COL_NAME] - 1
-    si = hdr_map[SECTION_COL_NAME] - 1
+    # worksheet.append([None] * len(headers)) # use to append a blank row after the header if required
+
+    rows = list(metrics_ws.iter_rows(min_row=1, values_only=True))
+    header_map = get_column_index_map(metrics_ws)
+    wer_index = header_map[WER_COL_NAME] - 1
+    hallucination_index = header_map[HALLUCINATION_PERCENT_COL_NAME] - 1
+    section_index = header_map[SECTION_COL_NAME] - 1
     if CALL_LEVEL_GRANULARITY:
-        wer_vals = [r[wi] for r in rows if r[si] == ENTIRE_COL_NAME and isinstance(r[wi], (int, float))]
-        hp_vals  = [r[hi] for r in rows if r[si] == ENTIRE_COL_NAME and isinstance(r[hi], (int, float))]
+        wer_vals = [row[wer_index] for row in rows if row[section_index] == ENTIRE_COL_NAME and isinstance(row[wer_index], (int, float))]
+        hallucination_vals  = [row[hallucination_index] for row in rows if row[section_index] == ENTIRE_COL_NAME and isinstance(row[hallucination_index], (int, float))]
     else:
-        wer_vals = [r[wi] for r in rows if r[si] != ENTIRE_COL_NAME and isinstance(r[wi], (int, float))]
-        hp_vals  = [r[hi] for r in rows if r[si] != ENTIRE_COL_NAME and isinstance(r[hi], (int, float))]
+        wer_vals = [r[wer_index] for r in rows if r[section_index] != ENTIRE_COL_NAME and isinstance(r[wer_index], (int, float))]
+        hallucination_vals  = [r[hallucination_index] for r in rows if r[section_index] != ENTIRE_COL_NAME and isinstance(r[hallucination_index], (int, float))]
     avg_wer = sum(wer_vals) / len(wer_vals) if wer_vals else 0.0
-    avg_hp  = sum(hp_vals) / len(hp_vals) if hp_vals else 0.0
-    meta = metrics_ws.cell(2, 1).value
-    sess_idx = hdr_map[SESSION_ID_COL_NAME] - 1
-    sessions = len(set(r[sess_idx] for r in rows if r[si] == ENTIRE_COL_NAME))
+    avg_hp  = sum(hallucination_vals) / len(hallucination_vals) if hallucination_vals else 0.0
 
-    ws.append([meta, avg_wer, sessions, avg_hp])
-    ws.cell(3, 2).number_format = "0.00"
-    ws.cell(3, 4).number_format = "0.00000"
-    for c in ws[3]:
+    meta = metrics_ws.cell(2, 1).value
+    sess_idx = header_map[SESSION_ID_COL_NAME] - 1
+    sessions = len(set(r[sess_idx] for r in rows if r[section_index] == ENTIRE_COL_NAME))
+
+    worksheet.append([meta, avg_wer, sessions, avg_hp])
+    worksheet.cell(2, 2).number_format = "0.00"
+    worksheet.cell(2, 4).number_format = "0.00000"
+    for c in worksheet[2]: # row 2 - the summary data row
         c.font = Font(name="Aptos", size=9)
         c.alignment = Alignment("left", "center")
         c.fill = PatternFill("solid", fgColor=CALL_LEVEL_BKGND_COLOR if CALL_LEVEL_GRANULARITY else SAMPLE_LEVEL_BKGND_COLOR)
-        c.border = thin_border
+        c.border = THIN_BORDER
     col_widths = {"A":30, "B":13, "C":16, "D":22}
     for col, w in col_widths.items():
-        ws.column_dimensions[col].width = w
+        worksheet.column_dimensions[col].width = w
 
 def get_monthly_filepath(root_dir: str, metrics_files: list[str], prefix: str) -> tuple[str, str, str, str]:
     dates = []
@@ -380,9 +480,9 @@ def create_monthly_worksheet(root_dir: str, metrics_files: list[str], prefix: st
         if r[hi].value is not None:
             r[hi].number_format = "0.00000"
         if r[si].value == ENTIRE_COL_NAME:
-            for c in r: c.fill, c.border = PatternFill("solid", fgColor=CALL_LEVEL_BKGND_COLOR), thin_border
+            for c in r: c.fill, c.border = PatternFill("solid", fgColor=CALL_LEVEL_BKGND_COLOR), THIN_BORDER
         else:
-            for c in r: c.fill, c.border = PatternFill("solid", fgColor=SAMPLE_LEVEL_BKGND_COLOR), thin_border
+            for c in r: c.fill, c.border = PatternFill("solid", fgColor=SAMPLE_LEVEL_BKGND_COLOR), THIN_BORDER
 
     mon_sum = wb.create_sheet(WEEKLY_SUMMARY_WORKSHEET_NAME)
     first = True
@@ -421,7 +521,7 @@ def create_monthly_worksheet(root_dir: str, metrics_files: list[str], prefix: st
             c.font = Font(name="Aptos", size=9, bold=(c.row == 1))
             if c.row == last:
                 c.fill = fill_con
-                c.border = thin_border
+                c.border = THIN_BORDER
 
     add_sample_summary_sheet(wb, monthly_metrics)
     wb.save(monthly_path)
@@ -454,32 +554,34 @@ def main() -> None:
             for cell in row:
                 cell.font = Font(name="Aptos", size=9, bold=(cell.row == 1))
 
-        mws = add_metrics_sheet(wb_out)
-        write_header(mws)
-        md = os.path.basename(inp).rsplit(".", 1)[0]
-        process_sessions(in_ws, mws, md)
+        monthly_worksheet = add_metrics_sheet(wb_out)
+        write_header(monthly_worksheet)
+        metadata = os.path.basename(inp).rsplit(".", 1)[0]
+        process_sessions(in_ws, monthly_worksheet, metadata)
 
-        style_columns(mws)
-        sws = add_summary_sheet(wb_out)
-        write_summary(mws, sws)
-        add_sample_summary_sheet(wb_out, mws)
+        style_columns(monthly_worksheet)
+        summary_worksheet = add_summary_sheet(wb_out)
+        write_summary(monthly_worksheet, summary_worksheet)
+        add_sample_summary_sheet(wb_out, monthly_worksheet)
 
         wb_out.save(out_path)
         metrics_files.append(out_path)
         print(f"{len(metrics_files)}/{len(input_files)} ... Saved metrics & summary to {out_path}")
 
     if DO_MONTHLY_CONSOLIDATION and metrics_files:
-        mon_path = create_monthly_worksheet(ROOT_DIR, metrics_files, SPREADSHEET_PREFIX)
-        print(f"Saved monthly consolidated metrics to {mon_path}")
+        monthly_path = create_monthly_worksheet(ROOT_DIR, metrics_files, SPREADSHEET_PREFIX)
+        print(f"Saved monthly consolidated metrics to {monthly_path}")
 
 if __name__ == "__main__":
     main()
 	
+######################### =======================================
 
 # standalone_asr_interleaved_metrics.py
 # extends standalone_asr_metrics_baseline.py to add interleaved metrics when vtype column is present
 
 import os
+import re
 from collections import defaultdict
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
@@ -488,7 +590,7 @@ from openpyxl.utils import get_column_letter
 import standalone_asr_metrics_baseline
 
 # baseline constants
-INTERLEAVED_ROOT_DIR = standalone_asr_metrics_baseline.ROOT_DIR
+INTERLEAVED_ROOT_DIR = "j:/projects/sheet-logic/asr-april-2025-data-agent-cust/" # standalone_asr_metrics_baseline.ROOT_DIR
 INTERLEAVED_SPREADSHEET_PREFIX = standalone_asr_metrics_baseline.SPREADSHEET_PREFIX
 INTERLEAVED_WORKSHEET_PREFIX = standalone_asr_metrics_baseline.WORKSHEET_PREFIX
 INTERLEAVED_DO_MONTHLY_CONSOLIDATION = standalone_asr_metrics_baseline.DO_MONTHLY_CONSOLIDATION
@@ -504,7 +606,7 @@ INTERLEAVED_SECTION_COL_NAME = standalone_asr_metrics_baseline.SECTION_COL_NAME
 INTERLEAVED_WER_COL_NAME = standalone_asr_metrics_baseline.WER_COL_NAME
 INTERLEAVED_HALLUCINATION_PERCENT_COL_NAME = standalone_asr_metrics_baseline.HALLUCINATION_PERCENT_COL_NAME
 
-INTERLEAVED_THIN_BORDER = standalone_asr_metrics_baseline.thin_border
+INTERLEAVED_THIN_BORDER = standalone_asr_metrics_baseline.THIN_BORDER
 
 # interleaved worksheets
 INTERLEAVED_METRICS = "interleaved metrics"
@@ -585,7 +687,7 @@ def process_interleaved_sessions(input_ws, metrics_ws, metadata: str) -> None:
         standalone_asr_metrics_baseline.write_metrics_row(metrics_ws, metadata, sid, f"{role}_{sec}",
                                                           gt_blk, raw_blk, wer_s, hall, tok, hp)
 
-def write_interleaved_summary(metrics_ws, summary_ws):
+def OLD_write_interleaved_summary(metrics_ws, summary_ws):
   headers = [
     INTERLEAVED_METADATA_COL_NAME, "AVG_AGENT_WER", "AVG_CUSTOMER_WER",
     "num sessions", "Agent Hallucination Avg", "Customer Hallucination Avg"
@@ -614,7 +716,7 @@ def write_interleaved_summary(metrics_ws, summary_ws):
 
   summary_ws.append([meta, avg_awer, avg_cwer, sessions, avg_ah, avg_ch])
 
-def add_interleaved_sample_summary(wb, metrics_ws):
+def OLD_add_interleaved_sample_summary(wb, metrics_ws):
   ws = add_named_sheet(wb, INTERLEAVED_SAMPLE_SUMMARY)
   headers = [
     INTERLEAVED_METADATA_COL_NAME, "AVG_AGENT_WER", "AVG_CUSTOMER_WER",
@@ -644,7 +746,83 @@ def add_interleaved_sample_summary(wb, metrics_ws):
 
   ws.append([meta, avg_awer, avg_cwer, sessions, avg_ah, avg_ch])
 
-def create_monthly_interleaved(root_dir: str, metrics_files: list[str], prefix: str) -> str:
+def write_interleaved_summary(metrics_ws, summary_ws):
+    headers = [
+        INTERLEAVED_METADATA_COL_NAME, "AVG_AGENT_WER", "AVG_CUSTOMER_WER",
+        "num sessions", "Avg Agent Hallucination%", "Avg Customer Hallucination%"
+    ]
+    for i, h in enumerate(headers, start=1):
+        c = summary_ws.cell(1, i, h)
+        c.font = Font(name="Aptos", size=11, bold=True)
+        c.alignment = Alignment("left", "center")
+
+    rows = list(metrics_ws.iter_rows(min_row=2, values_only=True))
+    if not rows:
+        return
+
+    meta = standalone_asr_metrics_baseline.get_normalized_metadata(rows, 0, INTERLEAVED_SPREADSHEET_PREFIX)
+
+    if standalone_asr_metrics_baseline.CALL_LEVEL_GRANULARITY:
+        agent_rows = [r for r in rows if str(r[2]).strip() == "Agent"]
+        cust_rows = [r for r in rows if str(r[2]).strip() == "Customer"]
+        session_rows = agent_rows + cust_rows
+    else:
+        agent_rows = [r for r in rows if str(r[2]).startswith("Agent_")]
+        cust_rows = [r for r in rows if str(r[2]).startswith("Customer_")]
+        session_rows = [r for r in rows if str(r[2]) in ("Agent", "Customer")]
+
+    def avg(vals):
+        return sum(vals) / len(vals) if vals else 0
+
+    avg_awer = avg([r[5] for r in agent_rows if isinstance(r[5], (int, float))])
+    avg_cwer = avg([r[5] for r in cust_rows if isinstance(r[5], (int, float))])
+    avg_ah = avg([r[8] for r in agent_rows if isinstance(r[8], (int, float))])
+    avg_ch = avg([r[8] for r in cust_rows if isinstance(r[8], (int, float))])
+    sessions = len(session_rows) // 2
+
+    summary_ws.append([meta, avg_awer, avg_cwer, sessions, avg_ah, avg_ch])
+
+def add_interleaved_sample_summary(wb, metrics_ws):
+    ws = add_named_sheet(wb, INTERLEAVED_SAMPLE_SUMMARY)
+    headers = [
+        INTERLEAVED_METADATA_COL_NAME, "AVG_AGENT_WER", "AVG_CUSTOMER_WER",
+        "num sessions", "Avg Agent Hallucination%", "Avg Customer Hallucination%"
+    ]
+    for i, h in enumerate(headers, start=1):
+        c = ws.cell(1, i, h)
+        c.font = Font(name="Aptos", size=11, bold=True)
+        c.alignment = Alignment("left", "center")
+
+    rows = list(metrics_ws.iter_rows(min_row=2, values_only=True))
+    if not rows:
+        return
+
+    meta = standalone_asr_metrics_baseline.get_normalized_metadata(rows, 0, INTERLEAVED_SPREADSHEET_PREFIX)
+
+    if standalone_asr_metrics_baseline.CALL_LEVEL_GRANULARITY:
+        agent_rows = [r for r in rows if str(r[2]).strip() == "Agent"]
+        cust_rows = [r for r in rows if str(r[2]).strip() == "Customer"]
+        session_rows = agent_rows + cust_rows
+    else:
+        agent_rows = [r for r in rows if str(r[2]).startswith("Agent_")]
+        cust_rows = [r for r in rows if str(r[2]).startswith("Customer_")]
+        session_rows = [r for r in rows if str(r[2]) in ("Agent", "Customer")]
+
+    def avg(vals):
+        return sum(vals) / len(vals) if vals else 0
+
+    avg_awer = avg([r[5] for r in agent_rows if isinstance(r[5], (int, float))])
+    avg_cwer = avg([r[5] for r in cust_rows if isinstance(r[5], (int, float))])
+    avg_ah = avg([r[8] for r in agent_rows if isinstance(r[8], (int, float))])
+    avg_ch = avg([r[8] for r in cust_rows if isinstance(r[8], (int, float))])
+    sessions = len(session_rows) // 2
+
+    ws.append([meta, avg_awer, avg_cwer, sessions, avg_ah, avg_ch])
+
+    # Apply shared styling
+    standalone_asr_metrics_baseline.style_summary_worksheet(ws)
+
+def OLD_create_monthly_interleaved(root_dir: str, metrics_files: list[str], prefix: str) -> str:
   path, earliest, latest, year = standalone_asr_metrics_baseline.get_monthly_filepath(root_dir, metrics_files, prefix)
   out_path = path.replace("_monthly_metrics.xlsx", "_monthly_interleaved.xlsx")
   if os.path.exists(out_path): os.remove(out_path)
@@ -684,6 +862,91 @@ def create_monthly_interleaved(root_dir: str, metrics_files: list[str], prefix: 
   wb.save(out_path)
   return out_path
 
+def create_monthly_interleaved(root_dir: str, metrics_files: list[str], prefix: str) -> str:
+  path, earliest, latest, year = standalone_asr_metrics_baseline.get_monthly_filepath(root_dir, metrics_files, prefix)
+  out_path = path.replace("_monthly_metrics.xlsx", "_monthly_interleaved.xlsx")
+  if os.path.exists(out_path): os.remove(out_path)
+
+  wb = Workbook()
+  del wb[wb.sheetnames[0]]
+
+  interleaved_metrics = add_named_sheet(wb, INTERLEAVED_METRICS)
+  first = True
+  for mf in metrics_files:
+    wbf = load_workbook(mf)
+    if INTERLEAVED_METRICS not in wbf.sheetnames: continue
+    ws = wbf[INTERLEAVED_METRICS]
+    for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
+      if i == 1 and not first: continue
+      interleaved_metrics.append(row)
+    first = False
+
+  if interleaved_metrics.max_row > 1:
+    # Style just like regular metrics
+    standalone_asr_metrics_baseline.style_columns(interleaved_metrics)
+
+    isum = add_named_sheet(wb, INTERLEAVED_SUMMARY)
+    write_interleaved_summary(interleaved_metrics, isum)
+    isum.freeze_panes = "A2"
+    isum.auto_filter.ref = f"A1:{get_column_letter(isum.max_column)}{isum.max_row}"
+    for col, w in {"A": 30, "B": 14, "C": 17, "D": 16, "E": 22, "F": 22}.items():
+      isum.column_dimensions[col].width = w
+    last = isum.max_row
+    fill_con = PatternFill("solid", fgColor="00FFFF")
+    for row in isum.iter_rows(min_row=1, max_row=last):
+      for c in row:
+        c.font = Font(name="Aptos", size=9, bold=(c.row == 1))
+        if c.row == last:
+          c.fill = fill_con
+          c.border = INTERLEAVED_THIN_BORDER
+
+    add_interleaved_sample_summary(wb, interleaved_metrics)
+
+  wb.save(out_path)
+  return out_path
+
+def OLD_style_interleaved_metrics_worksheet(ws):
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+
+    col_widths = standalone_asr_metrics_baseline.METRICS_COL_WIDTHS
+    for col_letter, width in col_widths.items():
+        ws.column_dimensions[col_letter].width = width
+
+    for cell in ws[1]:
+        cell.font = Font(name="Aptos", size=9)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        cell.fill = PatternFill(
+            "solid",
+            fgColor=(
+                standalone_asr_metrics_baseline.CALL_LEVEL_BKGND_COLOR
+                if standalone_asr_metrics_baseline.CALL_LEVEL_GRANULARITY
+                else standalone_asr_metrics_baseline.SAMPLE_LEVEL_BKGND_COLOR
+            )
+        )
+        cell.border = standalone_asr_metrics_baseline.THIN_BORDER
+
+def style_interleaved_metrics_worksheet(ws):
+  from standalone_asr_metrics_baseline import (
+    METRICS_COL_WIDTHS, THIN_BORDER, CALL_LEVEL_GRANULARITY,
+    CALL_LEVEL_BKGND_COLOR, SAMPLE_LEVEL_BKGND_COLOR
+  )
+
+  ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+  ws.freeze_panes = "A2"
+
+  fill_color = CALL_LEVEL_BKGND_COLOR if CALL_LEVEL_GRANULARITY else SAMPLE_LEVEL_BKGND_COLOR
+
+  for row in ws.iter_rows(min_row=1, max_row=1):
+    for cell in row:
+      cell.font = Font(name="Aptos", size=9, bold=True)
+      cell.alignment = Alignment("left", "center")
+      cell.fill = PatternFill("solid", fgColor=fill_color)
+      cell.border = THIN_BORDER
+
+  for col_letter, width in METRICS_COL_WIDTHS.items():
+    ws.column_dimensions[col_letter].width = width
+
 def main():
   input_files = standalone_asr_metrics_baseline.list_input_spreadsheets(INTERLEAVED_ROOT_DIR)
   metrics_files = []
@@ -720,6 +983,8 @@ def main():
       #print(f"DEBUG: vtype column found in {inp}, creating interleaved sheets")
       iws = add_named_sheet(output_workbook, INTERLEAVED_METRICS)
       standalone_asr_metrics_baseline.write_header(iws)
+      style_interleaved_metrics_worksheet(iws)
+
       process_interleaved_sessions(input_worksheet, iws, metadata)
       isum = add_named_sheet(output_workbook, INTERLEAVED_SUMMARY)
       write_interleaved_summary(iws, isum)
