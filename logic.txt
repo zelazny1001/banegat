@@ -1,0 +1,360 @@
+# standalone_asr_interleaved_metrics.py
+# extends standalone_asr_metrics_baseline.py to add interleaved metrics when vtype column is present
+
+import os
+import re
+from collections import defaultdict
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils import get_column_letter
+
+import standalone_asr_metrics_baseline
+
+# baseline constants
+INTERLEAVED_ROOT_DIR = "j:/projects/sheet-logic/asr-april-2025-data-agent-cust/" # standalone_asr_metrics_baseline.ROOT_DIR
+INTERLEAVED_SPREADSHEET_PREFIX = standalone_asr_metrics_baseline.SPREADSHEET_PREFIX
+INTERLEAVED_WORKSHEET_PREFIX = standalone_asr_metrics_baseline.WORKSHEET_PREFIX
+INTERLEAVED_DO_MONTHLY_CONSOLIDATION = standalone_asr_metrics_baseline.DO_MONTHLY_CONSOLIDATION
+INTERLEAVED_NUMBER_OF_SECTIONS = standalone_asr_metrics_baseline.NUMBER_OF_SECTIONS
+INTERLEAVED_WER_POST_ENDPOINT = standalone_asr_metrics_baseline.WER_POST_ENDPOINT
+
+INTERLEAVED_SESSION_ID_COL_NAME = standalone_asr_metrics_baseline.SESSION_ID_COL_NAME
+INTERLEAVED_RAW_TRANSCRIPT_COL_NAME = standalone_asr_metrics_baseline.RAW_TRANSCRIPT_COL_NAME
+INTERLEAVED_GROUND_TRUTH_COL_NAME = standalone_asr_metrics_baseline.GROUND_TRUTH_COL_NAME
+
+INTERLEAVED_METADATA_COL_NAME = standalone_asr_metrics_baseline.METADATA_COL_NAME
+INTERLEAVED_SECTION_COL_NAME = standalone_asr_metrics_baseline.SECTION_COL_NAME
+INTERLEAVED_WER_COL_NAME = standalone_asr_metrics_baseline.WER_COL_NAME
+INTERLEAVED_HALLUCINATION_COL_NAME = standalone_asr_metrics_baseline.HALLUCINATION_COUNT_COL_NAME
+INTERLEAVED_HALLUCINATION_PERCENT_COL_NAME = standalone_asr_metrics_baseline.HALLUCINATION_PERCENT_COL_NAME
+
+INTERLEAVED_THIN_BORDER = standalone_asr_metrics_baseline.THIN_BORDER
+
+# interleaved worksheets
+INTERLEAVED_METRICS = "interleaved metrics"
+INTERLEAVED_SUMMARY = "interleaved summary"
+INTERLEAVED_SAMPLE_SUMMARY = "interleaved sample summary"
+
+# new input column
+VTYPE_COL_NAME = "vtype"
+
+def add_named_sheet(wb: Workbook, name: str):
+  if name in wb.sheetnames:
+    del wb[name]
+  return wb.create_sheet(name)
+
+def pick_input_worksheet(wb_in: Workbook) -> str:
+  for name in wb_in.sheetnames:
+    if name.startswith(INTERLEAVED_WORKSHEET_PREFIX):
+      return name
+  for name in wb_in.sheetnames:
+    if not any(name.lower().startswith(x) for x in [
+      "metrics", "summary", "sample summary", "interleaved"
+    ]):
+      return name
+  return wb_in.sheetnames[0]
+ 
+def has_required_columns(ws) -> bool:
+  hdr = [str(c.value).strip().lower() for c in ws[1] if c.value]
+  return "session_id" in hdr and "raw_transcript" in hdr
+
+def has_vtype_column(ws) -> bool:
+  hdr = [str(c.value).strip().lower() for c in ws[1] if c.value]
+  return "vtype" in hdr
+
+def OLD_process_interleaved_sessions(input_ws, metrics_ws, metadata: str) -> None:
+  header = standalone_asr_metrics_baseline.get_column_index_map(input_ws)
+  session_id_col_index = header[INTERLEAVED_SESSION_ID_COL_NAME] - 1
+  transcript_col_index = header[INTERLEAVED_RAW_TRANSCRIPT_COL_NAME] - 1
+  ground_truth_col_index = header[INTERLEAVED_GROUND_TRUTH_COL_NAME] - 1
+  vtype_col_index = header.get(VTYPE_COL_NAME, None)
+  if vtype_col_index: vtype_col_index -= 1 # vtype column is present, so we know this file has agent and customer interaction
+
+  input_data = [
+    row for row in input_ws.iter_rows(min_row=2, values_only=True)
+    if str(row[session_id_col_index] or "").strip()
+  ]
+
+  sessions = defaultdict(lambda: defaultdict(list))
+  for row in input_data:
+    session_id = str(row[session_id_col_index]).strip()
+    vtype = str(row[vtype_col_index]).strip() if vtype_col_index is not None and row[vtype_col_index] else "Unknown"
+    sessions[session_id][vtype].append((row[transcript_col_index], row[ground_truth_col_index]))
+
+  for session_id, speakers in sessions.items():
+    for speaker, entries in speakers.items():
+      gt_all = " ".join(standalone_asr_metrics_baseline.preprocess_text(gt) for _, gt in entries)
+      transcript_all = " ".join(standalone_asr_metrics_baseline.preprocess_text(transcript) for transcript, _ in entries)
+      wer_ent, tok = standalone_asr_metrics_baseline.get_wer_from_api(INTERLEAVED_WER_POST_ENDPOINT, gt_all, transcript_all)
+      hallucination_count = len(entries)
+      hallucination_percent = (100 * hallucination_count / tok) if tok else None
+      standalone_asr_metrics_baseline.write_metrics_row(metrics_ws, metadata, session_id, speaker,
+                                                        gt_all, transcript_all, wer_ent, hallucination_count, tok, hallucination_percent, True)
+
+      total = len(entries)
+      base = total // INTERLEAVED_NUMBER_OF_SECTIONS # number of entries per section
+      rem = total % INTERLEAVED_NUMBER_OF_SECTIONS
+      start = 0
+      for section in range(1, INTERLEAVED_NUMBER_OF_SECTIONS + 1):
+        cnt = base + (1 if section <= rem else 0)
+        if cnt == 0: break
+        block = entries[start:start + cnt]
+        start += cnt
+        gt_block = " ".join(standalone_asr_metrics_baseline.preprocess_text(gt) for _, gt in block)
+        transcript_block = " ".join(standalone_asr_metrics_baseline.preprocess_text(raw) for raw, _ in block)
+        section_wer, tok = standalone_asr_metrics_baseline.get_wer_from_api(INTERLEAVED_WER_POST_ENDPOINT, gt_block, transcript_block)
+        hallucination_count = len(block)
+        hallucination_percent = (100 * hallucination_count / tok) if tok else None
+        standalone_asr_metrics_baseline.write_metrics_row(metrics_ws, metadata, session_id, f"{speaker}_{section}",
+                                                          gt_block, transcript_block, section_wer, hallucination_count, tok, hallucination_percent)
+
+def process_interleaved_sessions(input_ws, metrics_ws, metadata: str) -> None:
+  header = standalone_asr_metrics_baseline.get_column_index_map(input_ws)
+  session_id_col_index = header[INTERLEAVED_SESSION_ID_COL_NAME] - 1
+  transcript_col_index = header[INTERLEAVED_RAW_TRANSCRIPT_COL_NAME] - 1
+  hallucination_col_index = header[INTERLEAVED_HALLUCINATION_COL_NAME] - 1
+  ground_truth_col_index = header[INTERLEAVED_GROUND_TRUTH_COL_NAME] - 1
+  vtype_col_index = header.get(VTYPE_COL_NAME, None)
+  if vtype_col_index: vtype_col_index -= 1
+
+  input_data = [
+    row for row in input_ws.iter_rows(min_row=2, values_only=True)
+    if str(row[session_id_col_index] or "").strip()
+  ]
+
+  sessions = defaultdict(lambda: defaultdict(list))
+  for row in input_data:
+    session_id = str(row[session_id_col_index]).strip()
+    vtype = str(row[vtype_col_index]).strip() if vtype_col_index is not None and row[vtype_col_index] else "Unknown"
+    transcript = row[transcript_col_index]
+    hallucination = row[hallucination_col_index]
+    gt = row[ground_truth_col_index]
+    sessions[session_id][vtype].append((transcript, gt, hallucination))
+
+  for session_id, speakers in sessions.items():
+    for speaker, entries in speakers.items():
+      gt_all = " ".join(standalone_asr_metrics_baseline.preprocess_text(gt) for _, gt, _ in entries)
+      transcript_all = " ".join(
+        standalone_asr_metrics_baseline.preprocess_text(transcript) for transcript, _, _ in entries)
+      hallucination_count = sum(len(str(hall).split()) for _, _, hall in entries if hall)
+      wer_ent, tok = standalone_asr_metrics_baseline.get_wer_from_api(INTERLEAVED_WER_POST_ENDPOINT, gt_all,
+                                                                      transcript_all)
+      hallucination_percent = (100 * hallucination_count / tok) if tok else None
+
+      standalone_asr_metrics_baseline.write_metrics_row(
+        metrics_ws, metadata, session_id, speaker,
+        gt_all, transcript_all, wer_ent,
+        hallucination_count, tok, hallucination_percent, True
+      )
+
+      total = len(entries)
+      base = total // INTERLEAVED_NUMBER_OF_SECTIONS
+      rem = total % INTERLEAVED_NUMBER_OF_SECTIONS
+      start = 0
+      for section in range(1, INTERLEAVED_NUMBER_OF_SECTIONS + 1):
+        cnt = base + (1 if section <= rem else 0)
+        if cnt == 0: break
+        block = entries[start:start + cnt]
+        start += cnt
+
+        gt_block = " ".join(standalone_asr_metrics_baseline.preprocess_text(gt) for _, gt, _ in block)
+        transcript_block = " ".join(standalone_asr_metrics_baseline.preprocess_text(raw) for raw, _, _ in block)
+        hallucination_count = sum(len(str(hall).split()) for _, _, hall in block if hall)
+        section_wer, tok = standalone_asr_metrics_baseline.get_wer_from_api(INTERLEAVED_WER_POST_ENDPOINT, gt_block,
+                                                                            transcript_block)
+        hallucination_percent = (100 * hallucination_count / tok) if tok else None
+
+        standalone_asr_metrics_baseline.write_metrics_row(
+          metrics_ws, metadata, session_id, f"{speaker}_{section}",
+          gt_block, transcript_block, section_wer,
+          hallucination_count, tok, hallucination_percent
+        )
+
+def style_summary_worksheet_header(summary_worksheet):
+  headers = [
+    INTERLEAVED_METADATA_COL_NAME, "AVG_AGENT_WER", "AVG_CUSTOMER_WER",
+    "num sessions", "Avg Agent Hallucination%", "Avg Customer Hallucination%"
+  ]
+  for index, header in enumerate(headers, start=1):
+    cell = summary_worksheet.cell(1, index, header)
+    cell.font = Font(name="Aptos", size=9, bold=True)
+    cell.alignment = Alignment("left", "center")
+
+def write_interleaved_summary(metrics_ws, summary_ws):
+    style_summary_worksheet_header(summary_ws)
+    rows = list(metrics_ws.iter_rows(min_row=2, values_only=True))
+    if not rows:
+        return
+
+    meta = standalone_asr_metrics_baseline.get_normalized_metadata(rows, 0, INTERLEAVED_SPREADSHEET_PREFIX)
+
+    if standalone_asr_metrics_baseline.CALL_LEVEL_GRANULARITY:
+        agent_rows = [r for r in rows if str(r[2]).strip() == "Agent"]
+        cust_rows = [r for r in rows if str(r[2]).strip() == "Customer"]
+        session_rows = agent_rows + cust_rows
+    else:
+        agent_rows = [r for r in rows if str(r[2]).startswith("Agent_")]
+        cust_rows = [r for r in rows if str(r[2]).startswith("Customer_")]
+        session_rows = [r for r in rows if str(r[2]) in ("Agent", "Customer")]
+
+    def avg(vals):
+        return sum(vals) / len(vals) if vals else 0
+
+    avg_agent_wer = avg([r[5] for r in agent_rows if isinstance(r[5], (int, float))])
+    avg_customer_wer = avg([r[5] for r in cust_rows if isinstance(r[5], (int, float))])
+    avg_agent_hallucination = avg([r[8] for r in agent_rows if isinstance(r[8], (int, float))])
+    avg_customer_hallucination = avg([r[8] for r in cust_rows if isinstance(r[8], (int, float))])
+    sessions = len(session_rows) // 2 # since there are 2 participants (agent, customer) per session
+
+    summary_ws.append([meta, avg_agent_wer, avg_customer_wer, sessions, avg_agent_hallucination, avg_customer_hallucination])
+
+def add_interleaved_sample_summary(wb, metrics_ws):
+    summary_ws = add_named_sheet(wb, INTERLEAVED_SAMPLE_SUMMARY)
+    style_summary_worksheet_header(summary_ws)
+
+    rows = list(metrics_ws.iter_rows(min_row=2, values_only=True))
+    if not rows:
+        return
+
+    meta = standalone_asr_metrics_baseline.get_normalized_metadata(rows, 0, INTERLEAVED_SPREADSHEET_PREFIX)
+
+    if standalone_asr_metrics_baseline.CALL_LEVEL_GRANULARITY:
+        agent_rows = [r for r in rows if str(r[2]).strip() == "Agent"]
+        cust_rows = [r for r in rows if str(r[2]).strip() == "Customer"]
+        session_rows = agent_rows + cust_rows
+    else:
+        agent_rows = [r for r in rows if str(r[2]).startswith("Agent_")]
+        cust_rows = [r for r in rows if str(r[2]).startswith("Customer_")]
+        session_rows = [r for r in rows if str(r[2]) in ("Agent", "Customer")]
+
+    def avg(vals):
+        return sum(vals) / len(vals) if vals else 0
+
+    avg_agent_wer = avg([r[5] for r in agent_rows if isinstance(r[5], (int, float))])
+    avg_customer_wer = avg([r[5] for r in cust_rows if isinstance(r[5], (int, float))])
+    avg_agent_hallucination = avg([r[8] for r in agent_rows if isinstance(r[8], (int, float))])
+    avg_customer_hallucination = avg([r[8] for r in cust_rows if isinstance(r[8], (int, float))])
+    sessions = len(session_rows) // 2
+
+    summary_ws.append([meta, avg_agent_wer, avg_customer_wer, sessions, avg_agent_hallucination, avg_customer_hallucination])
+
+    # Apply shared styling
+    standalone_asr_metrics_baseline.style_summary_worksheet(summary_ws)
+
+def create_monthly_interleaved(root_dir: str, metrics_files: list[str], prefix: str) -> str:
+  path, earliest, latest, year = standalone_asr_metrics_baseline.get_monthly_filepath(root_dir, metrics_files, prefix)
+  out_path = path.replace("_monthly_metrics.xlsx", "_monthly_interleaved.xlsx")
+  if os.path.exists(out_path): os.remove(out_path)
+
+  wb = Workbook()
+  del wb[wb.sheetnames[0]]
+
+  interleaved_metrics = add_named_sheet(wb, INTERLEAVED_METRICS)
+  first = True
+  for mf in metrics_files:
+    wbf = load_workbook(mf)
+    if INTERLEAVED_METRICS not in wbf.sheetnames: continue
+    ws = wbf[INTERLEAVED_METRICS]
+    for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
+      if i == 1 and not first: continue
+      interleaved_metrics.append(row)
+    first = False
+
+  if interleaved_metrics.max_row > 1:
+    # Style just like regular metrics
+    standalone_asr_metrics_baseline.style_columns(interleaved_metrics)
+
+    isum = add_named_sheet(wb, INTERLEAVED_SUMMARY)
+    write_interleaved_summary(interleaved_metrics, isum)
+    isum.freeze_panes = "A2"
+    isum.auto_filter.ref = f"A1:{get_column_letter(isum.max_column)}{isum.max_row}"
+    for col, w in {"A": 30, "B": 14, "C": 17, "D": 16, "E": 22, "F": 22}.items():
+      isum.column_dimensions[col].width = w
+    last = isum.max_row
+    fill_con = PatternFill("solid", fgColor="00FFFF")
+    for row in isum.iter_rows(min_row=1, max_row=last):
+      for c in row:
+        c.font = Font(name="Aptos", size=9, bold=(c.row == 1))
+        if c.row == last:
+          c.fill = fill_con
+          c.border = INTERLEAVED_THIN_BORDER
+
+    add_interleaved_sample_summary(wb, interleaved_metrics)
+
+  wb.save(out_path)
+  return out_path
+
+def style_interleaved_metrics_worksheet(ws):
+  from standalone_asr_metrics_baseline import (
+    METRICS_COL_WIDTHS, THIN_BORDER, CALL_LEVEL_GRANULARITY,
+    CALL_LEVEL_BKGND_COLOR, SAMPLE_LEVEL_BKGND_COLOR
+  )
+
+  ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+  ws.freeze_panes = "A2"
+
+  fill_color = CALL_LEVEL_BKGND_COLOR if CALL_LEVEL_GRANULARITY else SAMPLE_LEVEL_BKGND_COLOR
+
+  for row in ws.iter_rows(min_row=1, max_row=1):
+    for cell in row:
+      cell.font = Font(name="Aptos", size=9, bold=True)
+      cell.alignment = Alignment("left", "center")
+      cell.fill = PatternFill("solid", fgColor=fill_color)
+      cell.border = THIN_BORDER
+
+  for col_letter, width in METRICS_COL_WIDTHS.items():
+    ws.column_dimensions[col_letter].width = width
+
+def main():
+  input_files = standalone_asr_metrics_baseline.list_input_spreadsheets(INTERLEAVED_ROOT_DIR)
+  metrics_files = []
+
+  for input_file in input_files:
+    input_workbook = load_workbook(input_file)
+    worksheet_name = pick_input_worksheet(input_workbook)
+    input_worksheet = input_workbook[worksheet_name]
+    print(
+      f"Using worksheet {worksheet_name} from {input_file} (headers: {standalone_asr_metrics_baseline.get_column_index_map(input_worksheet)})")
+
+    if not has_required_columns(input_worksheet):
+      print(f"Skipping {input_file}: missing required headers for input processing")
+      continue
+
+    output_path = standalone_asr_metrics_baseline.get_name_of_results_spreadsheet(input_file)
+    if os.path.exists(output_path): os.remove(output_path)
+
+    output_workbook = Workbook()
+    copy_worksheet = output_workbook.active
+    copy_worksheet.title = worksheet_name
+    for row in input_worksheet.iter_rows(values_only=True): copy_worksheet.append(row)
+
+    metrics_worksheet = standalone_asr_metrics_baseline.add_metrics_sheet(output_workbook)
+    standalone_asr_metrics_baseline.write_header(metrics_worksheet)
+    metadata = os.path.basename(input_file).rsplit(".", 1)[0]
+    standalone_asr_metrics_baseline.process_sessions(input_worksheet, metrics_worksheet, metadata)
+    standalone_asr_metrics_baseline.style_columns(metrics_worksheet)
+    summary_worksheet = standalone_asr_metrics_baseline.add_summary_sheet(output_workbook)
+    standalone_asr_metrics_baseline.write_summary(metrics_worksheet, summary_worksheet)
+    standalone_asr_metrics_baseline.add_sample_summary_sheet(output_workbook, metrics_worksheet)
+
+    if has_vtype_column(input_worksheet):
+      #print(f"DEBUG: vtype column found in {inp}, creating interleaved sheets")
+      iws = add_named_sheet(output_workbook, INTERLEAVED_METRICS)
+      standalone_asr_metrics_baseline.write_header(iws)
+      style_interleaved_metrics_worksheet(iws)
+
+      process_interleaved_sessions(input_worksheet, iws, metadata)
+      isum = add_named_sheet(output_workbook, INTERLEAVED_SUMMARY)
+      write_interleaved_summary(iws, isum)
+      add_interleaved_sample_summary(output_workbook, iws)
+
+    output_workbook.save(output_path)
+    metrics_files.append(output_path)
+    print(f"Saved {output_path}")
+
+  if INTERLEAVED_DO_MONTHLY_CONSOLIDATION and metrics_files:
+    monthly_path = create_monthly_interleaved(INTERLEAVED_ROOT_DIR, metrics_files, INTERLEAVED_SPREADSHEET_PREFIX)
+    print(f"Saved monthly interleaved metrics to {monthly_path}")
+
+if __name__ == "__main__":
+  main()
