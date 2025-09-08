@@ -1,3 +1,58 @@
+# ============================================
+# constants.py
+
+from __future__ import annotations
+
+USE_HALLUCINATION_FLAGS: bool = False
+CODE_IS_BEING_TESTED: bool = True
+
+ROOT_DIR: str = "j:/projects/sheet-logic/asr-april-2025-data/"
+SPREADSHEET_PREFIX: str = "ASR"
+WORKSHEET_PREFIX: str = "ASR"
+METRICS_CONDITION_TEMPLATE = "j:/projects/sheet-logic/asr_metrics/metrics-condition-template.xlsx"
+DO_MONTHLY_CONSOLIDATION: bool = True
+CALL_LEVEL_GRANULARITY: bool = True
+
+SESSION_ID_COL_NAME: str = "session_id"
+RAW_TRANSCRIPT_COL_NAME: str = "raw_transcript"
+GROUND_TRUTH_COL_NAME: str = "Ground Truth Transcript"
+HALLUCINATION_COL_NAME: str = "Hallucination"
+
+INPUT_DATA_WORKSHEET_NAME: str = "input-data"
+
+METRICS_WORKSHEET_NAME: str = "metrics"
+METADATA_COL_NAME: str = "metadata"
+SECTION_COL_NAME: str = "section"
+ENTIRE_COL_NAME: str = "entire"
+GT_SECTION_TEXT_COL_NAME: str = "gt section"
+MODEL_SECTION_TEXT_COL_NAME: str = "model text"
+WER_COL_NAME: str = "WER"
+HALLUCINATION_COUNT_COL_NAME: str = "Hallucination"
+GT_TOKS_COL_NAME: str = "GT Toks"
+HALLUCINATION_PERCENT_COL_NAME: str = "Hallucination %"
+
+NUMBER_OF_SECTIONS: int = 5
+WER_POST_ENDPOINT: str = "https://wer_host:3281/word_error_rate"
+WER_ALGORITHM = "nltk"
+
+WEEKLY_SUMMARY_WORKSHEET_NAME: str = "weekly-summary"
+MONTHLY_SUMMARY_WORKSHEET_NAME: str = "monthly-summary"
+
+AVERAGE_WER_COL_NAME: str = "AVG_WER"
+SESSION_COUNT_COL_NAME: str = "num sessions"
+SUMMARY_HALLUCINATION_COUNT_COL_NAME: str = "Hallucination Count"
+HALLUCINATION_AVG_COL_NAME: str = "Hallucination Avg"
+AVG_HALLUCINATION_PERCENT_COL_NAME: str = "Avg Hallucination %"
+
+CALL_LEVEL_BKGND_COLOR: str = "00FFFF"
+SAMPLE_LEVEL_BKGND_COLOR: str = "FFFFFF"
+SOURCE_COL_WIDTHS = {"A": 69, "B": 35, "C": 35, "D": 12}
+METRICS_HEADER_COL_WIDTHS = {"A": 27, "B": 65, "C": 9, "D": 63, "E": 63, "F": 8, "G": 12, "H": 10, "I": 15}
+SUMMARY_COL_WIDTHS = {"A": 30, "B": 13, "C": 16, "D": 22}
+
+# ============================================
+# metrics_conditions.py
+
 from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.workbook import Workbook
@@ -62,6 +117,9 @@ def get_column_index(ws: Worksheet, header_name: str) -> int:
         if str(cell.value).strip() == header_name:
             return index
     raise ValueError(f"Header '{header_name}' not found.")
+
+# ============================================
+# main.py
 
 from __future__ import annotations
 from constants import ROOT_DIR, SPREADSHEET_PREFIX, DO_MONTHLY_CONSOLIDATION
