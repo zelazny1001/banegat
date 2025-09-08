@@ -25,38 +25,6 @@ def add_weekly_summary_sheet(workbook) -> Worksheet:
         del workbook[WEEKLY_SUMMARY_WORKSHEET_NAME]
     return workbook.create_sheet(WEEKLY_SUMMARY_WORKSHEET_NAME)
 
-def OLD_write_weekly_summary(metrics_worksheet: Worksheet, summary_worksheet: Worksheet) -> None:
-    write_weekly_summary_header(summary_worksheet)
-    summaries = extract_metadata_groups(metrics_worksheet)
-    write_weekly_summary_rows(summary_worksheet, summaries, start_row=3)
-    write_weekly_summary_final_row(summary_worksheet, summaries)
-    set_weekly_summary_column_widths(summary_worksheet)
-
-def OLD_write_weekly_summary(metrics_worksheet: Worksheet, summary_worksheet: Worksheet) -> None:
-  write_weekly_summary_header(summary_worksheet)
-  if AVERAGING_PERIOD == "monthly":
-    metadata_summaries = extract_metadata_groups(metrics_worksheet)
-    write_weekly_summary_rows(summary_worksheet, metadata_summaries, start_row=3)
-    write_weekly_summary_final_row(summary_worksheet, metadata_summaries)
-  else: # weekly
-    weekly_summaries = extract_metadata_groups(metrics_worksheet)
-    write_weekly_summary_rows(summary_worksheet, weekly_summaries, start_row=3)
-    header_map = {c.value: idx for idx, c in enumerate(summary_worksheet[1], start=1)}
-    meta_index = header_map[METADATA_COL_NAME] - 1
-    avg_wer_index = header_map[AVERAGE_WER_COL_NAME] - 1
-    avg_hallucination_index = header_map[AVG_HALLUCINATION_PERCENT_COL_NAME] - 1
-    summaries_from_sheet: dict[str, list[tuple[float, float]]] = {}
-    for row in summary_worksheet.iter_rows(min_row=3, values_only=True):
-      meta_label = row[meta_index]
-      if not meta_label:
-        continue
-      w = row[avg_wer_index]
-      h = row[avg_hallucination_index]
-      summaries_from_sheet.setdefault(meta_label, []).append((w, h))
-    write_weekly_summary_final_row(summary_worksheet, summaries_from_sheet)
-
-  set_weekly_summary_column_widths(summary_worksheet)
-
 def write_weekly_summary(metrics_worksheet: Worksheet, summary_worksheet: Worksheet) -> None:
   write_weekly_summary_header(summary_worksheet)
   weekly_summaries = extract_metadata_groups(metrics_worksheet)
@@ -114,62 +82,32 @@ def write_weekly_summary_rows(summary_worksheet: Worksheet, summaries: dict[str,
         for col in range(1, 5):
             summary_worksheet.cell(row_offset, col).font = Font(name="Aptos", size=9)
 
-def OLD_write_weekly_summary_final_row(summary_worksheet: Worksheet, summaries: dict[str, list[tuple[float, float]]]) -> None:
-    all_rows = []
-    for metadata_value, rows in summaries.items():
-        for w, sessions, h in rows:
-            all_rows.append((metadata_value, w, sessions, h))
-
-    wer_values = [r[1] for r in all_rows if isinstance(r[1], (int, float))]
-    hallucination_values = [r[3] for r in all_rows if isinstance(r[3], (int, float))]
-    session_values = [r[2] for r in all_rows if isinstance(r[2], (int, float))]
-
-    total_sessions = int(sum(session_values)) if session_values else 0
-    average_wer = round(sum(wer_values) / len(wer_values), 4) if wer_values else None
-    average_hallucination = round(sum(hallucination_values) / len(hallucination_values), 5) if hallucination_values else None
-
-    metadata_rows_only = [[r[0] for r in all_rows]]
-    normalized_metadata = normalize_metadata(metadata_rows_only, 0, SPREADSHEET_PREFIX)
-
-    final_row_index = len(summaries) + 4
-    summary_worksheet.cell(final_row_index, 1, normalized_metadata)
-    c2 = summary_worksheet.cell(final_row_index, 2, average_wer)
-    c3 = summary_worksheet.cell(final_row_index, 3, total_sessions)
-    c4 = summary_worksheet.cell(final_row_index, 4, average_hallucination)
-
-    for col in (1, 2, 3, 4):
-        cell = summary_worksheet.cell(final_row_index, col)
-        cell.font = Font(name="Aptos", size=9)
-        cell.fill = PatternFill("solid", fgColor=CALL_LEVEL_BKGND_COLOR)
-
-        header_value = summary_worksheet.cell(1, col).value
-        if header_value == WER_COL_NAME:
-            cell.number_format = "0.00"
-        if header_value == HALLUCINATION_PERCENT_COL_NAME:
-            cell.number_format = "0.00000"
-
 def write_weekly_summary_final_row(summary_worksheet: Worksheet,
                                    summaries: dict[str, list[tuple[float, float, float]]]) -> None:
   all_rows = []
   for metadata_value, rows in summaries.items():
-    for w, sessions, h in rows:
-      all_rows.append((metadata_value, w, sessions, h))
-  wer_values = [r[1] for r in all_rows if isinstance(r[1], (int, float))]
-  hallucination_values = [r[3] for r in all_rows if isinstance(r[3], (int, float))]
-  session_values = [r[2] for r in all_rows if isinstance(r[2], (int, float))]
-  total_sessions = int(sum(session_values)) if session_values else 0
+    for wer, sessions, hallucinations in rows:
+      all_rows.append((metadata_value, wer, sessions, hallucinations))
+
+  wer_values = [row[1] for row in all_rows if isinstance(row[1], (int, float))]
   average_wer = (sum(wer_values) / len(wer_values)) if wer_values else None
+  session_values = [row[2] for row in all_rows if isinstance(row[2], (int, float))]
+  total_sessions = int(sum(session_values)) if session_values else 0
+  hallucination_values = [row[3] for row in all_rows if isinstance(row[3], (int, float))]
   average_hallucination = (sum(hallucination_values) / len(hallucination_values)) if hallucination_values else None
-  metadata_rows_only = [[r[0] for r in all_rows]]
-  normalized_metadata = normalize_metadata(metadata_rows_only, 0, SPREADSHEET_PREFIX)
+
+  metadata_rows = [[row[0] for row in all_rows]]
+  normalized_metadata = normalize_metadata(metadata_rows, 0, SPREADSHEET_PREFIX)
   final_row_index = len(summaries) + 4
   summary_worksheet.cell(final_row_index, 1, normalized_metadata)
   c2 = summary_worksheet.cell(final_row_index, 2, average_wer)
   c3 = summary_worksheet.cell(final_row_index, 3, total_sessions)
   c4 = summary_worksheet.cell(final_row_index, 4, average_hallucination)
+
   for col in (1, 2, 3, 4):
     cell = summary_worksheet.cell(final_row_index, col)
     cell.font = Font(name="Aptos", size=9)
     cell.fill = PatternFill("solid", fgColor=CALL_LEVEL_BKGND_COLOR)
+
   c2.number_format = "0.000"
   c4.number_format = "0.000"
