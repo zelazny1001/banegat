@@ -1,0 +1,18 @@
+def write_weekly_summary(metrics_worksheet: Worksheet, summary_worksheet: Worksheet) -> None:
+    write_weekly_summary_header(summary_worksheet)
+    raw_summaries = extract_metadata_groups(metrics_worksheet)
+    write_weekly_summary_rows(summary_worksheet, raw_summaries, start_row=3)
+    header_map = {c.value: idx for idx, c in enumerate(summary_worksheet[1], start=1)}
+    meta_i = header_map[METADATA_COL_NAME] - 1
+    avg_wer_i = header_map[AVERAGE_WER_COL_NAME] - 1
+    avg_hall_i = header_map[AVG_HALLUCINATION_PERCENT_COL_NAME] - 1
+    summaries_from_sheet: dict[str, list[tuple[float, float]]] = {}
+    for row in summary_worksheet.iter_rows(min_row=3, values_only=True):
+        meta = row[meta_i]
+        if not meta:
+            continue
+        w = row[avg_wer_i]
+        h = row[avg_hall_i]
+        summaries_from_sheet.setdefault(meta, []).append((w, h))
+    write_weekly_summary_final_row(summary_worksheet, summaries_from_sheet)
+    set_weekly_summary_column_widths(summary_worksheet)
