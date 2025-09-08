@@ -1,148 +1,68 @@
-# ============================================
-# constants.py
-
 from __future__ import annotations
-
-USE_HALLUCINATION_FLAGS: bool = False
-CODE_IS_BEING_TESTED: bool = True
-
-ROOT_DIR: str = "j:/projects/sheet-logic/asr-april-2025-data/"
-SPREADSHEET_PREFIX: str = "ASR"
-WORKSHEET_PREFIX: str = "ASR"
-METRICS_CONDITION_TEMPLATE = "j:/projects/sheet-logic/asr_metrics/metrics-condition-template.xlsx"
-DO_MONTHLY_CONSOLIDATION: bool = True
-CALL_LEVEL_GRANULARITY: bool = True
-
-SESSION_ID_COL_NAME: str = "session_id"
-RAW_TRANSCRIPT_COL_NAME: str = "raw_transcript"
-GROUND_TRUTH_COL_NAME: str = "Ground Truth Transcript"
-HALLUCINATION_COL_NAME: str = "Hallucination"
-
-INPUT_DATA_WORKSHEET_NAME: str = "input-data"
-
-METRICS_WORKSHEET_NAME: str = "metrics"
-METADATA_COL_NAME: str = "metadata"
-SECTION_COL_NAME: str = "section"
-ENTIRE_COL_NAME: str = "entire"
-GT_SECTION_TEXT_COL_NAME: str = "gt section"
-MODEL_SECTION_TEXT_COL_NAME: str = "model text"
-WER_COL_NAME: str = "WER"
-HALLUCINATION_COUNT_COL_NAME: str = "Hallucination"
-GT_TOKS_COL_NAME: str = "GT Toks"
-HALLUCINATION_PERCENT_COL_NAME: str = "Hallucination %"
-
-NUMBER_OF_SECTIONS: int = 5
-WER_POST_ENDPOINT: str = "https://wer_host:3281/word_error_rate"
-WER_ALGORITHM = "nltk"
-
-WEEKLY_SUMMARY_WORKSHEET_NAME: str = "weekly-summary"
-MONTHLY_SUMMARY_WORKSHEET_NAME: str = "monthly-summary"
-
-AVERAGE_WER_COL_NAME: str = "AVG_WER"
-SESSION_COUNT_COL_NAME: str = "num sessions"
-SUMMARY_HALLUCINATION_COUNT_COL_NAME: str = "Hallucination Count"
-HALLUCINATION_AVG_COL_NAME: str = "Hallucination Avg"
-AVG_HALLUCINATION_PERCENT_COL_NAME: str = "Avg Hallucination %"
-
-CALL_LEVEL_BKGND_COLOR: str = "00FFFF"
-SAMPLE_LEVEL_BKGND_COLOR: str = "FFFFFF"
-SOURCE_COL_WIDTHS = {"A": 69, "B": 35, "C": 35, "D": 12}
-METRICS_HEADER_COL_WIDTHS = {"A": 27, "B": 65, "C": 9, "D": 63, "E": 63, "F": 8, "G": 12, "H": 10, "I": 15}
-SUMMARY_COL_WIDTHS = {"A": 30, "B": 13, "C": 16, "D": 22}
-
-# ============================================
-# metrics_conditions.py
-
-from openpyxl import load_workbook
+import re
 from openpyxl.worksheet.worksheet import Worksheet
-from openpyxl.workbook import Workbook
-from openpyxl.styles import Font
-from openpyxl.utils import get_column_letter
-
+from openpyxl.styles import Font, Alignment, PatternFill
 from constants import (
-    METRICS_CONDITION_TEMPLATE,
-    CALL_LEVEL_GRANULARITY,
-    WER_ALGORITHM,
-    WER_POST_ENDPOINT,
-    USE_HALLUCINATION_FLAGS
+  MONTHLY_SUMMARY_WORKSHEET_NAME,
+  METADATA_COL_NAME,
+  AVERAGE_WER_COL_NAME,
+  SESSION_COUNT_COL_NAME,
+  AVG_HALLUCINATION_PERCENT_COL_NAME,
+  WER_COL_NAME,
+  HALLUCINATION_PERCENT_COL_NAME,
+  SECTION_COL_NAME,
+  ENTIRE_COL_NAME,
+  SPREADSHEET_PREFIX,
+  CALL_LEVEL_GRANULARITY,
+  CALL_LEVEL_BKGND_COLOR,
+  SAMPLE_LEVEL_BKGND_COLOR,
+  SUMMARY_COL_WIDTHS,
 )
+from styling import THIN_BORDER
 
-# template spreadsheet headers. these must only be changed from "metrics-conditioin-template.xlsx"
-FACTOR_HEADER = "Factor"
-OMR_REQUIRES_HEADER = "OMR Requires"
-GENERATED_USING_HEADER = "Generated Using"
+def normalize_metadata(rows: list[list[str]], meta_index: int, prefix: str) -> str:
+    metas = [r[meta_index] for r in rows if r[meta_index]]
+    parts = [re.search(r"_(\d{4})(?:thru|-)(\d{4})_(\d{4})", m) for m in metas if m]
+    earliest = min(p.group(1) for p in parts if p)
+    latest = max(p.group(2) for p in parts if p)
+    year = parts[0].group(3) if parts else "????"
+    return f"{prefix}_{earliest}-{latest}_{year}"
 
-# template worksheet rows under column 1. these must only be changed from "metrics-conditioin-template.xlsx"
-WER_GRANULARITY_ROW = "WER Granularity"
-WER_ALGORITHM_ROW = "WER Algorithm"
-WER_LOCATION_ROW = "WER Compute Location"
-HALLUCINATION_GRANULARITY_ROW = "Hallucination Granularity"
+def add_overall_summary_sheet(workbook, metrics_worksheet: Worksheet) -> None:
+    if MONTHLY_SUMMARY_WORKSHEET_NAME in workbook.sheetnames:
+        del workbook[MONTHLY_SUMMARY_WORKSHEET_NAME]
+    summary_sheet = workbook.create_sheet(MONTHLY_SUMMARY_WORKSHEET_NAME)
+    headers = [METADATA_COL_NAME, AVERAGE_WER_COL_NAME, SESSION_COUNT_COL_NAME, AVG_HALLUCINATION_PERCENT_COL_NAME]
+    for col, title in enumerate(headers, start=1):
+        cell = summary_sheet.cell(1, col, title)
+        cell.font = Font(name="Aptos", size=9, bold=True)
+        cell.alignment = Alignment("left", "center")
+    header_map = {c.value: idx for idx, c in enumerate(metrics_worksheet[1], start=1)}
+    rows = list(metrics_worksheet.iter_rows(min_row=2, values_only=True))
+    wer_index = header_map[WER_COL_NAME] - 1
+    hallucination_percent_index = header_map[HALLUCINATION_PERCENT_COL_NAME] - 1
+    section_index = header_map[SECTION_COL_NAME] - 1
+    metadata_index = header_map[METADATA_COL_NAME] - 1
+    if CALL_LEVEL_GRANULARITY:
+        wer_values = [row[wer_index] for row in rows if row[section_index] == ENTIRE_COL_NAME and isinstance(row[wer_index], (int, float))]
+        hallucination_values = [row[hallucination_percent_index] for row in rows if row[section_index] == ENTIRE_COL_NAME and isinstance(row[hallucination_percent_index], (int, float))]
+    else:
+        wer_values = [row[wer_index] for row in rows if row[section_index] != ENTIRE_COL_NAME and isinstance(row[wer_index], (int, float))]
+        hallucination_values = [row[hallucination_percent_index] for row in rows if row[section_index] != ENTIRE_COL_NAME and isinstance(row[hallucination_percent_index], (int, float))]
+    average_wer = sum(wer_values) / len(wer_values) if wer_values else 0.0
+    average_hallucination = sum(hallucination_values) / len(hallucination_values) if hallucination_values else 0.0
+    normalized_meta = normalize_metadata(rows, metadata_index, SPREADSHEET_PREFIX)
+    session_count = sum(1 for row in rows if row[section_index] == ENTIRE_COL_NAME)
+    values = [normalized_meta, average_wer, session_count, average_hallucination]
 
-CONDITION_COL_WIDTHS = {"A": 23, "B": 23, "C": 36}
+    for col, value in enumerate(values, start=1):
+        cell = summary_sheet.cell(2, col, value)
+        cell.font = Font(name="Aptos", size=9)
+        cell.alignment = Alignment("left", "center")
+        cell.fill = PatternFill("solid", fgColor=CALL_LEVEL_BKGND_COLOR if CALL_LEVEL_GRANULARITY else SAMPLE_LEVEL_BKGND_COLOR)
+        cell.border = THIN_BORDER
+        if col in (2, 4):
+          cell.number_format = "0.0000"
 
-def append_metrics_conditions_worksheet(conditions_template_workbook: Workbook) -> None:
-    source_workbook = load_workbook(METRICS_CONDITION_TEMPLATE)
-    source_worksheet = source_workbook.active
-    destination_worksheet = conditions_template_workbook.create_sheet(title=source_worksheet.title)
-
-    for row in source_worksheet.iter_rows(values_only=True):
-        destination_worksheet.append(list(row))
-
-    factor_column = get_column_index(destination_worksheet, FACTOR_HEADER)
-    generated_using_column = get_column_index(destination_worksheet, GENERATED_USING_HEADER)
-
-    for row in destination_worksheet.iter_rows(min_row=2):
-        factor_cell = row[factor_column - 1]
-        generated_using_cell = row[generated_using_column - 1]
-        factor = str(factor_cell.value).strip()
-
-        if factor == WER_GRANULARITY_ROW:
-            generated_using_cell.value = "averaged across calls" if CALL_LEVEL_GRANULARITY else "averaged across samples"
-        elif factor == WER_ALGORITHM_ROW:
-            generated_using_cell.value = WER_ALGORITHM
-        elif factor == WER_LOCATION_ROW:
-            generated_using_cell.value = WER_POST_ENDPOINT
-        elif factor == HALLUCINATION_GRANULARITY_ROW:
-            generated_using_cell.value = "Hallucination Flags" if USE_HALLUCINATION_FLAGS else "token"
-
-    for row in destination_worksheet.iter_rows():
-        for cell in row:
-            cell.font = Font(name="Aptos", size=9, bold=(cell.row == 1))
-
-    for col_letter, width in CONDITION_COL_WIDTHS.items():
-        destination_worksheet.column_dimensions[col_letter].width = width
-
-def get_column_index(ws: Worksheet, header_name: str) -> int:
-    for index, cell in enumerate(ws[1], start=1):
-        if str(cell.value).strip() == header_name:
-            return index
-    raise ValueError(f"Header '{header_name}' not found.")
-
-# ============================================
-# main.py
-
-from __future__ import annotations
-from constants import ROOT_DIR, SPREADSHEET_PREFIX, DO_MONTHLY_CONSOLIDATION
-from file_io import list_input_spreadsheets, build_metrics_workbook_from_input, create_monthly_workbook, qualifies_for_processing
-from metrics_conditions import append_metrics_conditions_worksheet
-
-def main() -> None:
-    input_files = list_input_spreadsheets(ROOT_DIR)
-    metrics_files: list[str] = []
-    for index, input_path in enumerate(input_files, start=1):
-        ok, _ = qualifies_for_processing(input_path)
-        if not ok:
-            print(f"{index}/{len(input_files)} Skipping {input_path}: no worksheet starting with {SPREADSHEET_PREFIX}")
-            continue
-        output_path = build_metrics_workbook_from_input(input_path)
-        if output_path:
-            metrics_files.append(output_path)
-            print(f"{index}/{len(input_files)} Saved metrics and summaries to {output_path}")
-    if DO_MONTHLY_CONSOLIDATION and metrics_files:
-        monthly_path, monthly_workbook = create_monthly_workbook(ROOT_DIR, metrics_files, SPREADSHEET_PREFIX)
-        append_metrics_conditions_worksheet(monthly_workbook)
-        monthly_workbook.save(monthly_path)
-        print(f"Saved monthly consolidated metrics to {monthly_path}")
-
-if __name__ == "__main__":
-    main()
+    for col_letter, width in SUMMARY_COL_WIDTHS.items():
+        summary_sheet.column_dimensions[col_letter].width = width
