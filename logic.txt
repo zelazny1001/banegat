@@ -1,180 +1,363 @@
-
-
-# === constants.py ===
-
-# constants.py
-
 from __future__ import annotations
-
-USE_HALLUCINATION_FLAGS: bool = False
-CODE_IS_BEING_TESTED: bool = True
-INCLUDE_CONDITIONS = False
-
-ROOT_DIR: str = "j:/projects/sheet-logic/asr-april-2025-data/"
-SPREADSHEET_PREFIX: str = "ASR"
-WORKSHEET_PREFIX: str = "ASR"
-METRICS_CONDITION_TEMPLATE = "metrics-condition-template.xlsx"
-DO_MONTHLY_CONSOLIDATION: bool = True
-CALL_LEVEL_GRANULARITY: bool = True # False means sample level granularity
-AVERAGING_PERIOD = "weekly" # or "monthly"
-
-SESSION_ID_COL_NAME: str = "session_id"
-RAW_TRANSCRIPT_COL_NAME: str = "raw_transcript"
-GROUND_TRUTH_COL_NAME: str = "Ground Truth Transcript"
-HALLUCINATION_COL_NAME: str = "Hallucination"
-
-INPUT_DATA_WORKSHEET_NAME: str = "input-data"
-
-METRICS_WORKSHEET_NAME: str = "metrics"
-METADATA_COL_NAME: str = "metadata"
-SECTION_COL_NAME: str = "section"
-ENTIRE_COL_NAME: str = "entire"
-GT_SECTION_TEXT_COL_NAME: str = "gt section"
-MODEL_SECTION_TEXT_COL_NAME: str = "model text"
-WER_COL_NAME: str = "WER"
-HALLUCINATION_COUNT_COL_NAME: str = "Hallucination"
-GT_TOKS_COL_NAME: str = "GT Toks"
-HALLUCINATION_PERCENT_COL_NAME: str = "Hallucination %"
-
-NUMBER_OF_SECTIONS: int = 5
-WER_POST_ENDPOINT: str = "https://wer_host:3281/word_error_rate"
-WER_ALGORITHM = "nltk"
-
-WEEKLY_SUMMARY_WORKSHEET_NAME: str = "weekly-summary"
-MONTHLY_SUMMARY_WORKSHEET_NAME: str = "monthly-summary"
-
-AVERAGE_WER_COL_NAME: str = "AVG_WER"
-SESSION_COUNT_COL_NAME: str = "num sessions"
-SUMMARY_HALLUCINATION_COUNT_COL_NAME: str = "Hallucination Count"
-HALLUCINATION_AVG_COL_NAME: str = "Hallucination Avg"
-AVG_HALLUCINATION_PERCENT_COL_NAME: str = "Avg Hallucination %"
-
-CALL_LEVEL_BKGND_COLOR: str = "00FFFF"
-SAMPLE_LEVEL_BKGND_COLOR: str = "FFFFFF"
-SOURCE_COL_WIDTHS = {"A": 69, "B": 35, "C": 35, "D": 12}
-METRICS_HEADER_COL_WIDTHS = {"A": 27, "B": 65, "C": 9, "D": 63, "E": 63, "F": 8, "G": 12, "H": 10, "I": 15}
-SUMMARY_COL_WIDTHS = {"A": 30, "B": 13, "C": 16, "D": 22}
-
-# Agent / Customer interaction support
-
-VTYPE_COL_NAME: str = "vtype"
-AGENT_VALUE: str = "Agent"
-CUSTOMER_VALUE: str = "Customer"
-
-
-# === interleaved_orchestrator.py ===
-
-from __future__ import annotations
-from typing import Dict, List, Tuple
-from pathlib import Path
-from openpyxl import load_workbook, Workbook
+from typing import Tuple
+import re
+import random
+import requests
+from openpyxl import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.styles import Font, Alignment
 from constants import (
-    INPUT_DATA_WORKSHEET_NAME,
-    METRICS_WORKSHEET_NAME,
-    WEEKLY_SUMMARY_WORKSHEET_NAME,
-    MONTHLY_SUMMARY_WORKSHEET_NAME,
+  USE_HALLUCINATION_FLAGS,
+  CODE_IS_BEING_TESTED,
+  WER_POST_ENDPOINT,
+  NUMBER_OF_SECTIONS,
+  METRICS_WORKSHEET_NAME,
+  METADATA_COL_NAME,
+  SESSION_ID_COL_NAME,
+  SECTION_COL_NAME,
+  ENTIRE_COL_NAME,
+  GT_SECTION_TEXT_COL_NAME,
+  MODEL_SECTION_TEXT_COL_NAME,
+  WER_COL_NAME,
+  HALLUCINATION_COUNT_COL_NAME,
+  GT_TOKS_COL_NAME,
+  HALLUCINATION_PERCENT_COL_NAME,
+  SESSION_ID_COL_NAME as SESSION_ID,
+  RAW_TRANSCRIPT_COL_NAME as RAW_TRANSCRIPT,
+  GROUND_TRUTH_COL_NAME as GROUND_TRUTH,
+  HALLUCINATION_COL_NAME as HALLUCINATION, HALLUCINATION_COL_NAME,
+)
+from styling import THIN_BORDER, style_metrics_columns
+from openpyxl.styles import PatternFill
+from constants import CALL_LEVEL_BKGND_COLOR, SAMPLE_LEVEL_BKGND_COLOR
+
+def get_column_index_map(worksheet: Worksheet) -> dict[str, int]:
+    return {cell.value: idx for idx, cell in enumerate(worksheet[1], start=1)}
+
+def preprocess_text(text: str) -> str:
+    if not text:
+        return ""
+    lowered = str(text).lower()
+    lowered = re.sub(r"[.,\-?…]", " ", lowered)
+    lowered = re.sub(r"\{[^}]*\}", "", lowered)
+    lowered = re.sub(r"[\[\]]", "", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()
+
+def get_wer_from_api(endpoint: str, ground_truth: str, transcript: str) -> Tuple[float, int]:
+    if CODE_IS_BEING_TESTED:
+        # gt_len = len(ground_truth.split())
+        # print(f"ground_truth: {ground_truth}, len: {gt_len}")
+        return round(random.uniform(0, 100), 4), len(ground_truth.split())
+    try:
+        response = requests.post(endpoint, json={"groundTruth": ground_truth, "transcript": transcript}, verify=False, timeout=10)
+        data = response.json()
+        return round(float(data[0]), 4), int(data[1])
+    except Exception:
+        return float("nan"), None
+
+def build_sessions_from_rows(worksheet: Worksheet) -> dict[str, list[tuple[str, str]]]:
+    header_map = get_column_index_map(worksheet)
+    session_id_index = header_map[SESSION_ID] - 1
+    raw_transcript_index = header_map[RAW_TRANSCRIPT] - 1
+    ground_truth_index = header_map[GROUND_TRUTH] - 1
+    rows = [row for row in worksheet.iter_rows(min_row=2, values_only=True) if str(row[session_id_index] or "").strip()]
+    sessions: dict[str, list[tuple[str, str]]] = {}
+    for row in rows:
+        session_id_value = str(row[session_id_index]).strip()
+        sessions.setdefault(session_id_value, []).append((row[raw_transcript_index], row[ground_truth_index]))
+    return sessions
+
+def get_hallucination_counts(worksheet: Worksheet, session_id: str) -> list[int]:
+    header_map = get_column_index_map(worksheet)
+    session_id_index = header_map[SESSION_ID] - 1
+    hallucination_index = header_map[HALLUCINATION] - 1
+    counts: list[int] = []
+    for row in worksheet.iter_rows(min_row=2, values_only=True):
+        if len(row) <= max(session_id_index, hallucination_index):
+            continue
+        row_session_id = str(row[session_id_index] or "").strip()
+        if row_session_id != session_id:
+            continue
+        hallucination = row[hallucination_index]
+        if not hallucination:
+            counts.append(0)
+        elif USE_HALLUCINATION_FLAGS:
+            counts.append(1)
+        else:
+            counts.append(len(str(hallucination).strip().split()))
+    return counts
+
+def compute_section_spans(total_items: int, section_count: int) -> list[tuple[int, int]]:
+    if total_items == 0 or section_count <= 0:
+        return []
+    base_size = total_items // section_count
+    remainder = total_items % section_count
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for i in range(1, section_count + 1):
+        size = base_size + (1 if i <= remainder else 0)
+        if size == 0:
+            break
+        end = start + size
+        spans.append((start, end))
+        start = end
+    return spans
+
+def join_texts_and_compute_wer(ground_truth_parts: list[str], transcript_parts: list[str]) -> tuple[str, str, float, int]:
+    ground_truth_joined = " ".join(preprocess_text(x) for x in ground_truth_parts)
+    transcript_joined = " ".join(preprocess_text(x) for x in transcript_parts)
+    wer_value, ground_truth_token_count = get_wer_from_api(WER_POST_ENDPOINT, ground_truth_joined, transcript_joined)
+    return ground_truth_joined, transcript_joined, wer_value, ground_truth_token_count
+
+def add_metrics_sheet(workbook: Workbook) -> Worksheet:
+    if METRICS_WORKSHEET_NAME in workbook.sheetnames:
+        del workbook[METRICS_WORKSHEET_NAME]
+    return workbook.create_sheet(METRICS_WORKSHEET_NAME)
+
+def OLD_write_metrics_header(worksheet: Worksheet) -> None:
+    headers = [
+        METADATA_COL_NAME,
+        SESSION_ID_COL_NAME,
+        SECTION_COL_NAME,
+        GT_SECTION_TEXT_COL_NAME,
+        MODEL_SECTION_TEXT_COL_NAME,
+        WER_COL_NAME,
+        HALLUCINATION_COUNT_COL_NAME,
+        GT_TOKS_COL_NAME,
+        HALLUCINATION_PERCENT_COL_NAME,
+    ]
+    for column_index, title in enumerate(headers, start=1):
+        cell = worksheet.cell(1, column_index, title)
+        cell.font = Font(name="Aptos", size=9, bold=True)
+        cell.alignment = Alignment("left", "center")
+    worksheet.freeze_panes = "A2"
+
+def write_metrics_header(worksheet: Worksheet) -> None:
+  headers = [
     METADATA_COL_NAME,
     SESSION_ID_COL_NAME,
-    RAW_TRANSCRIPT_COL_NAME,
-    GROUND_TRUTH_COL_NAME,
-    VTYPE_COL_NAME,
-)
-from interleaved_processing import separate_interleaved_sessions_by_vtype, process_interleaved_session
-from interleaved_summary import generate_interleaved_weekly_summary
+    SECTION_COL_NAME,
+    GT_SECTION_TEXT_COL_NAME,
+    MODEL_SECTION_TEXT_COL_NAME,
+    WER_COL_NAME,
+    HALLUCINATION_COUNT_COL_NAME,
+    GT_TOKS_COL_NAME,
+    HALLUCINATION_PERCENT_COL_NAME,
+    HALLUCINATION_COL_NAME,
+  ]
+  for column_index, title in enumerate(headers, start=1):
+    cell = worksheet.cell(1, column_index, title)
+    cell.font = Font(name="Aptos", size=9, bold=True)
+    cell.alignment = Alignment("left", "center")
+  worksheet.freeze_panes = "A2"
 
-def _load_input_ws(path: str) -> Worksheet:
-    wb = load_workbook(path, read_only=True)
-    return wb[INPUT_DATA_WORKSHEET_NAME] if INPUT_DATA_WORKSHEET_NAME in wb.sheetnames else wb.active
+def OLD_write_metrics_row(
+    worksheet: Worksheet,
+    metadata_value: str,
+    session_id_value: str,
+    section_value,
+    ground_truth_text: str,
+    model_text: str,
+    wer_value: float,
+    hallucination_token_count: int,
+    ground_truth_token_count: int,
+    hallucination_percent: float,
+    is_entire: bool = False
+) -> int:
+    row_index = worksheet.max_row + 1
+    font = Font(name="Aptos", size=9)
+    alignment = Alignment("left", "center")
+    fill = PatternFill("solid", fgColor=CALL_LEVEL_BKGND_COLOR if is_entire else SAMPLE_LEVEL_BKGND_COLOR)
+    values = (
+        metadata_value,
+        session_id_value,
+        section_value,
+        ground_truth_text,
+        model_text,
+        wer_value,
+        hallucination_token_count,
+        ground_truth_token_count,
+        hallucination_percent,
+    )
+    for column_index, value in enumerate(values, start=1):
+        cell = worksheet.cell(row_index, column_index, value)
+        cell.font = font
+        cell.alignment = alignment
+        cell.fill = fill
+        cell.border = THIN_BORDER
+        header_value = worksheet.cell(1, column_index).value
+        if header_value == WER_COL_NAME:
+            cell.number_format = "0.0000"
+        if header_value == HALLUCINATION_PERCENT_COL_NAME:
+            cell.number_format = "0.0000"
+    return row_index
 
-def _build_metrics_wb() -> Workbook:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = METRICS_WORKSHEET_NAME
-    ws.append([METADATA_COL_NAME, SESSION_ID_COL_NAME, VTYPE_COL_NAME, "section", "gt_section_text", "model_section_text", "WER", "Hallucination Count", "GT Tokens", "Hallucination %"])
-    return wb
+def write_metrics_row(
+    worksheet: Worksheet,
+    metadata_value: str,
+    session_id_value: str,
+    section_value,
+    ground_truth_text: str,
+    model_text: str,
+    wer_value: float,
+    hallucination_token_count: int,
+    ground_truth_token_count: int,
+    hallucination_percent: float,
+    hallucination_text: str,
+    is_entire: bool = False
+) -> int:
+  row_index = worksheet.max_row + 1
+  font = Font(name="Aptos", size=9)
+  alignment = Alignment("left", "center")
+  fill = PatternFill("solid", fgColor=CALL_LEVEL_BKGND_COLOR if is_entire else SAMPLE_LEVEL_BKGND_COLOR)
+  values = (
+    metadata_value,
+    session_id_value,
+    section_value,
+    ground_truth_text,
+    model_text,
+    wer_value,
+    hallucination_token_count,
+    ground_truth_token_count,
+    hallucination_percent,
+    hallucination_text,
+  )
+  for column_index, value in enumerate(values, start=1):
+    cell = worksheet.cell(row_index, column_index, value)
+    cell.font = font
+    cell.alignment = alignment
+    cell.fill = fill
+    cell.border = THIN_BORDER
+    header_value = worksheet.cell(1, column_index).value
+    if header_value == WER_COL_NAME:
+      cell.number_format = "0.0000"
+    if header_value == HALLUCINATION_PERCENT_COL_NAME:
+      cell.number_format = "0.0000"
+  return row_index
 
-def _header_map(ws: Worksheet) -> Dict[str, int]:
-    header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
-    return {name: idx for idx, name in enumerate(header)}
+def OLD_process_session(
+    input_worksheet: Worksheet,
+    metrics_worksheet: Worksheet,
+    metadata_value: str,
+    session_id: str,
+    transcript_and_gt_pairs: list[tuple[str, str]]
+) -> None:
+    hallucination_counts = get_hallucination_counts(input_worksheet, session_id)
+    ground_truth_full = [gt for _, gt in transcript_and_gt_pairs]
+    transcript_full = [raw for raw, _ in transcript_and_gt_pairs]
+    gt_joined, raw_joined, wer_full, gt_tokens_full = join_texts_and_compute_wer(ground_truth_full, transcript_full)
+    hallucination_total = sum(hallucination_counts)
+    hallucination_percent = (100 * hallucination_total / gt_tokens_full) if gt_tokens_full else None
+    write_metrics_row(
+        metrics_worksheet,
+        metadata_value,
+        session_id,
+        ENTIRE_COL_NAME,
+        gt_joined,
+        raw_joined,
+        wer_full,
+        hallucination_total,
+        gt_tokens_full,
+        hallucination_percent,
+        True
+    )
+    spans = compute_section_spans(len(transcript_and_gt_pairs), NUMBER_OF_SECTIONS)
+    for section_number, (a, b) in enumerate(spans, start=1):
+        block = transcript_and_gt_pairs[a:b]
+        hallucination_block = hallucination_counts[a:b]
+        gt_block = [gt for _, gt in block]
+        raw_block = [raw for raw, _ in block]
+        gt_join, raw_join, wer_join, gt_tok_join = join_texts_and_compute_wer(gt_block, raw_block)
+        hallucination_sum = sum(hallucination_block)
+        hallucination_pct = (100 * hallucination_sum / gt_tok_join) if gt_tok_join else None
+        write_metrics_row(
+            metrics_worksheet,
+            metadata_value,
+            session_id,
+            section_number,
+            gt_join,
+            raw_join,
+            wer_join,
+            hallucination_sum,
+            gt_tok_join,
+            hallucination_pct
+        )
+    style_metrics_columns(metrics_worksheet)
 
-def _metadata_to_sessions(ws: Worksheet) -> Dict[str, List[str]]:
-    hm = _header_map(ws)
-    mi = hm[METADATA_COL_NAME]
-    si = hm[SESSION_ID_COL_NAME]
-    seen: Dict[str, set] = {}
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        meta = str(row[mi]).strip() if row[mi] is not None else ""
-        sid = str(row[si]).strip() if row[si] is not None else ""
-        if not meta or not sid:
-            continue
-        seen.setdefault(meta, set()).add(sid)
-    return {k: sorted(list(v)) for k, v in seen.items()}
+def process_session(
+    input_worksheet: Worksheet,
+    metrics_worksheet: Worksheet,
+    metadata_value: str,
+    session_id: str,
+    transcript_and_gt_pairs: list[tuple[str, str]]
+) -> None:
+  hallucination_counts = get_hallucination_counts(input_worksheet, session_id)
+  hallucination_texts = get_hallucination_texts(input_worksheet, session_id)
+  ground_truth_full = [gt for _, gt in transcript_and_gt_pairs]
+  transcript_full = [raw for raw, _ in transcript_and_gt_pairs]
+  gt_joined, raw_joined, wer_full, gt_tokens_full = join_texts_and_compute_wer(ground_truth_full, transcript_full)
+  hallucination_total = sum(hallucination_counts)
+  hallucination_percent = (100 * hallucination_total / gt_tokens_full) if gt_tokens_full else None
+  hallucination_joined = " ".join(hallucination_texts)
+  write_metrics_row(
+    metrics_worksheet,
+    metadata_value,
+    session_id,
+    ENTIRE_COL_NAME,
+    gt_joined,
+    raw_joined,
+    wer_full,
+    hallucination_total,
+    gt_tokens_full,
+    hallucination_percent,
+    hallucination_joined,
+    True
+  )
+  spans = compute_section_spans(len(transcript_and_gt_pairs), NUMBER_OF_SECTIONS)
+  for section_number, (a, b) in enumerate(spans, start=1):
+    block = transcript_and_gt_pairs[a:b]
+    hallucination_block = hallucination_counts[a:b]
+    hallucination_block_texts = hallucination_texts[a:b]
+    gt_block = [gt for _, gt in block]
+    raw_block = [raw for raw, _ in block]
+    gt_join, raw_join, wer_join, gt_tok_join = join_texts_and_compute_wer(gt_block, raw_block)
+    hallucination_sum = sum(hallucination_block)
+    hallucination_pct = (100 * hallucination_sum / gt_tok_join) if gt_tok_join else None
+    hallucination_text_join = " ".join(hallucination_block_texts)
+    write_metrics_row(
+      metrics_worksheet,
+      metadata_value,
+      session_id,
+      section_number,
+      gt_join,
+      raw_join,
+      wer_join,
+      hallucination_sum,
+      gt_tok_join,
+      hallucination_pct,
+      hallucination_text_join
+    )
+  style_metrics_columns(metrics_worksheet)
 
-def build_interleaved_metrics_workbook_from_input(input_path: str) -> str:
-    src_ws = _load_input_ws(input_path)
-    metrics_wb = _build_metrics_wb()
-    metrics_ws = metrics_wb[METRICS_WORKSHEET_NAME]
-    meta_sessions = _metadata_to_sessions(src_ws)
-    for metadata_value, session_ids in meta_sessions.items():
-        for session_id in session_ids:
-            blocks = separate_interleaved_sessions_by_vtype(src_ws, session_id)
-            if not blocks:
-                continue
-            process_interleaved_session(src_ws, metrics_ws, metadata_value, session_id, blocks)
-    weekly_ws = metrics_wb.create_sheet(WEEKLY_SUMMARY_WORKSHEET_NAME)
-    generate_interleaved_weekly_summary(metrics_ws, weekly_ws)
-    out = str(Path(input_path).with_name(f"{Path(input_path).stem}_metrics.xlsx"))
-    metrics_wb.save(out)
-    return out
+def get_hallucination_texts(ws: Worksheet, session_id: str) -> list[str]:
+  header_map = get_column_index_map(ws)
+  session_index = header_map[SESSION_ID_COL_NAME] - 1
+  hallucination_index = header_map[HALLUCINATION_COL_NAME] - 1
 
-def write_interleaved_monthly_summary(workbook: Workbook) -> None:
-    metrics_ws = workbook[METRICS_WORKSHEET_NAME]
-    summary_ws = workbook.create_sheet(MONTHLY_SUMMARY_WORKSHEET_NAME)
-    generate_interleaved_weekly_summary(metrics_ws, summary_ws)
+  texts = []
+  for row in ws.iter_rows(min_row=2, values_only=True):
+    if len(row) <= max(session_index, hallucination_index):
+      continue
+    current_sid = str(row[session_index] or "").strip()
+    if current_sid != session_id:
+      continue
+    hallucination = row[hallucination_index]
+    texts.append(str(hallucination).strip() if hallucination else "")
+  return texts
 
-
-# === main.py ===
-
-from __future__ import annotations
-from openpyxl import load_workbook
-from constants import ROOT_DIR, SPREADSHEET_PREFIX, DO_MONTHLY_CONSOLIDATION, INCLUDE_CONDITIONS, INPUT_DATA_WORKSHEET_NAME, VTYPE_COL_NAME
-from monthly_aggregation_and_summary import list_input_spreadsheets, build_metrics_workbook_from_input, create_monthly_workbook, qualifies_for_processing
-from metrics_conditions import append_metrics_conditions_worksheet
-from interleaved_orchestrator import build_interleaved_metrics_workbook_from_input, write_interleaved_monthly_summary
-
-def has_vtype_column(input_path: str, worksheet_name: str) -> bool:
-    wb = load_workbook(input_path, read_only=True)
-    try:
-        ws = wb[worksheet_name] if worksheet_name in wb.sheetnames else wb[INPUT_DATA_WORKSHEET_NAME]
-    except KeyError:
-        ws = wb.active
-    header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
-    return VTYPE_COL_NAME in header
-
-def main() -> None:
-    input_files = list_input_spreadsheets(ROOT_DIR)
-    metrics_files: list[str] = []
-    for index, input_path in enumerate(input_files, start=1):
-        ok, ws_name = qualifies_for_processing(input_path)
-        if not ok:
-            print(f"{index}/{len(input_files)} Skipping {input_path}: no worksheet starting with {SPREADSHEET_PREFIX}")
-            continue
-        if has_vtype_column(input_path, ws_name):
-            output_path = build_interleaved_metrics_workbook_from_input(input_path)
-        else:
-            output_path = build_metrics_workbook_from_input(input_path)
-        if output_path:
-            metrics_files.append(output_path)
-            print(f"{index}/{len(input_files)} Saved metrics and summaries to {output_path}")
-    if DO_MONTHLY_CONSOLIDATION and metrics_files:
-        monthly_path, monthly_workbook = create_monthly_workbook(ROOT_DIR, metrics_files, SPREADSHEET_PREFIX)
-        if has_vtype_column(input_files[0], qualifies_for_processing(input_files[0])[1]):
-            write_interleaved_monthly_summary(monthly_workbook)
-        if INCLUDE_CONDITIONS:
-            append_metrics_conditions_worksheet(monthly_workbook)
-        monthly_workbook.save(monthly_path)
-        print(f"Saved monthly consolidated metrics to {monthly_path}")
-
-if __name__ == "__main__":
-    main()
+def compute_and_write_session_metrics(input_worksheet: Worksheet, metrics_worksheet: Worksheet, metadata_value: str) -> None:
+    sessions = build_sessions_from_rows(input_worksheet)
+    if not sessions:
+        return
+    for session_id, transcript_and_gt_pairs in sessions.items():
+        process_session(input_worksheet, metrics_worksheet, metadata_value, session_id, transcript_and_gt_pairs)
