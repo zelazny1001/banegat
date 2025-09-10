@@ -55,9 +55,16 @@ def main():
 
     distinct_intents = get_distinct_column_values(worksheet1_df, worksheet2_df, target_column_index)
     
+    unique_count_worksheet1 = len(worksheet1_df.iloc[:, target_column_index].dropna().unique())
+    unique_count_worksheet2 = len(worksheet2_df.iloc[:, target_column_index].dropna().unique())
+    total_unique_count = len(distinct_intents)
+    
+    print(f"Unique values in worksheet1: {unique_count_worksheet1}")
+    print(f"Unique values in worksheet2: {unique_count_worksheet2}")
+    print(f"Total unique values across both worksheets: {total_unique_count}")
+    
     comparison_df = create_comparison_dataframe(worksheet1_df, worksheet2_df, distinct_intents, target_column_index)
     
     save_comparison_worksheet(spreadsheet_path, comparison_df, comparison_sheet_name)
-
 if __name__ == "__main__":
     main()
