@@ -1,3 +1,5 @@
+# to_compare.py
+
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Font
@@ -43,8 +45,8 @@ def save_comparison_worksheet(workbook_path, comparison_df, new_sheet_name):
 
 def main():
   spreadsheet_path = "j:/projects/sheet-logic/compare_worksheets/to_compare.xlsx"
-  worksheet1_name = "worksheet1"
-  worksheet2_name = "worksheet2"
+  worksheet1_name = "Results"
+  worksheet2_name = "model-3004"
   comparison_sheet_name = "comparison"
   target_column_index = 1
 
@@ -57,8 +59,8 @@ def main():
   unique_count_worksheet2 = len(worksheet2_df.iloc[:, target_column_index].dropna().astype(str).str.strip().unique())
   total_unique_count = len(distinct_intents)
 
-  print(f"Unique values in worksheet1: {unique_count_worksheet1}")
-  print(f"Unique values in worksheet2: {unique_count_worksheet2}")
+  print(f"Unique values in {worksheet1_name}: {unique_count_worksheet1}")
+  print(f"Unique values in {worksheet2_name}: {unique_count_worksheet2}")
   print(f"Total unique values across both worksheets: {total_unique_count}")
 
   comparison_df = create_comparison_dataframe(worksheet1_df, worksheet2_df, distinct_intents, target_column_index)
