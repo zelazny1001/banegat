@@ -1,1 +1,63 @@
-insert into temp_table \(.*?\{[^}]*\bLINEAR\b[^}]*\}.*?\)\s*values\s*\(\s*'([^']*)'\s*,\s*'([^']*)'.*?\)
+# to_compare.py
+
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Font
+
+def load_worksheet_data(file_path, worksheet_name):
+    return pd.read_excel(file_path, sheet_name=worksheet_name, header=0)
+
+def get_distinct_column_values(df1, df2, column_index):
+    values1 = set(df1.iloc[:, column_index].dropna().unique())
+    values2 = set(df2.iloc[:, column_index].dropna().unique())
+    return sorted(values1.union(values2))
+
+def count_value_occurrences(df, column_index, target_value):
+    return len(df[df.iloc[:, column_index] == target_value])
+
+def create_comparison_dataframe(worksheet1_df, worksheet2_df, distinct_values, column_index):
+    comparison_data = []
+    for value in distinct_values:
+        count1 = count_value_occurrences(worksheet1_df, column_index, value)
+        count2 = count_value_occurrences(worksheet2_df, column_index, value)
+        diff = abs(count1 - count2)
+        comparison_data.append({
+            "intent": value, 
+            "worksheet-1-count": count1, 
+            "worksheet-2-count": count2,
+            "diff": diff
+        })
+    return pd.DataFrame(comparison_data)
+
+def format_comparison_worksheet(worksheet):
+    aptos_font = Font(name="Aptos", size=9, bold=True)
+    for cell in worksheet[1]:
+        cell.font = aptos_font
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+
+def save_comparison_worksheet(workbook_path, comparison_df, new_sheet_name):
+    book = load_workbook(workbook_path)
+    with pd.ExcelWriter(workbook_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        comparison_df.to_excel(writer, sheet_name=new_sheet_name, index=False)
+        worksheet = writer.sheets[new_sheet_name]
+        format_comparison_worksheet(worksheet)
+
+def main():
+    spreadsheet_path = "j:/projects/sheet-logic/compare_worksheets/comparison_spreadsheet.xlsx"
+    worksheet1_name = "worksheet1"
+    worksheet2_name = "worksheet2"
+    comparison_sheet_name = "comparison"
+    target_column_index = 1
+
+    worksheet1_df = load_worksheet_data(spreadsheet_path, worksheet1_name)
+    worksheet2_df = load_worksheet_data(spreadsheet_path, worksheet2_name)
+
+    distinct_intents = get_distinct_column_values(worksheet1_df, worksheet2_df, target_column_index)
+    
+    comparison_df = create_comparison_dataframe(worksheet1_df, worksheet2_df, distinct_intents, target_column_index)
+    
+    save_comparison_worksheet(spreadsheet_path, comparison_df, comparison_sheet_name)
+
+if __name__ == "__main__":
+    main()
