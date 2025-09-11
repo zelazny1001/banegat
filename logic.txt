@@ -1,71 +1,41 @@
-# to_compare.py
+# weights_to_excel.py
 
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment
 
-def load_worksheet_data(file_path, worksheet_name):
-  return pd.read_excel(file_path, sheet_name=worksheet_name, header=0)
+def save_weights_to_excel(weights_df, filename, sheet_name='Weights'):
+  try:
+    # Try to load existing workbook
+    workbook = load_workbook(filename)
+    if sheet_name in workbook.sheetnames:
+      # Remove existing sheet if it exists
+      del workbook[sheet_name]
+  except FileNotFoundError:
+    # Create new workbook if file doesn't exist
+    workbook = load_workbook()
 
-def get_distinct_column_values(df1, df2, column_index):
-  values1 = set(df1.iloc[:, column_index].dropna().astype(str).str.strip().unique())
-  values2 = set(df2.iloc[:, column_index].dropna().astype(str).str.strip().unique())
-  return sorted(values1.union(values2))
+  worksheet = workbook.create_sheet(sheet_name)
 
-def count_value_occurrences(df, column_index, target_value):
-  return len(df[df.iloc[:, column_index].astype(str).str.strip() == target_value])
+  for row_idx, (index, row) in enumerate(weights_df.iterrows(), 1):
+    # Write index value
+    worksheet.cell(row=row_idx, column=1, value=index)
 
-def create_comparison_dataframe(worksheet1_df, worksheet2_df, distinct_values, column_index):
-  comparison_data = []
-  for value in distinct_values:
-    count1 = count_value_occurrences(worksheet1_df, column_index, value)
-    count2 = count_value_occurrences(worksheet2_df, column_index, value)
-    diff = abs(count1 - count2)
-    comparison_data.append({
-      "intent": value,
-      "worksheet-1-count": count1,
-      "worksheet-2-count": count2,
-      "diff": diff
-    })
-  return pd.DataFrame(comparison_data)
+    # Write row values
+    for col_idx, value in enumerate(row, 2):
+      worksheet.cell(row=row_idx, column=col_idx, value=value)
 
-def format_comparison_worksheet(worksheet):
-  aptos_font = Font(name="Aptos", size=9, bold=True)
-  for cell in worksheet[1]:
-    cell.font = aptos_font
-  worksheet.freeze_panes = "A2"
-  worksheet.auto_filter.ref = worksheet.dimensions
+  for col_idx, column_name in enumerate(weights_df.columns, 2):
+    worksheet.cell(row=1, column=col_idx, value=column_name)
+  worksheet.cell(row=1, column=1, value=weights_df.index.name or 'Features')
 
-def save_comparison_worksheet(workbook_path, comparison_df, new_sheet_name):
-  book = load_workbook(workbook_path)
-  with pd.ExcelWriter(workbook_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-    comparison_df.to_excel(writer, sheet_name=new_sheet_name, index=False)
-    worksheet = writer.sheets[new_sheet_name]
-    format_comparison_worksheet(worksheet)
+  worksheet.column_dimensions['A'].width = 30
+  for col_idx in range(2, len(weights_df.columns) + 2):
+    worksheet.column_dimensions[chr(64 + col_idx)].width = 15
 
-def main():
-  spreadsheet_path = "j:/projects/sheet-logic/compare_worksheets/to_compare.xlsx"
-  worksheet1_name = "Results"
-  worksheet2_name = "model-3004"
-  comparison_sheet_name = "comparison"
-  target_column_index = 1
+  for row in worksheet.iter_rows():
+    for cell in row:
+      cell.alignment = Alignment(wrap_text=True)
 
-  worksheet1_df = load_worksheet_data(spreadsheet_path, worksheet1_name)
-  worksheet2_df = load_worksheet_data(spreadsheet_path, worksheet2_name)
-
-  distinct_intents = get_distinct_column_values(worksheet1_df, worksheet2_df, target_column_index)
-
-  unique_count_worksheet1 = len(worksheet1_df.iloc[:, target_column_index].dropna().astype(str).str.strip().unique())
-  unique_count_worksheet2 = len(worksheet2_df.iloc[:, target_column_index].dropna().astype(str).str.strip().unique())
-  total_unique_count = len(distinct_intents)
-
-  print(f"Unique values in {worksheet1_name}: {unique_count_worksheet1}")
-  print(f"Unique values in {worksheet2_name}: {unique_count_worksheet2}")
-  print(f"Total unique values across both worksheets: {total_unique_count}")
-
-  comparison_df = create_comparison_dataframe(worksheet1_df, worksheet2_df, distinct_intents, target_column_index)
-
-  save_comparison_worksheet(spreadsheet_path, comparison_df, comparison_sheet_name)
-
-if __name__ == "__main__":
-  main()
+  workbook.save(filename)
+  print(f"Weights successfully saved to {filename} in sheet '{sheet_name}'")
