@@ -1,41 +1,12 @@
-# weights_to_excel.py
+def calculate_weights_difference(df1_weights, df2_weights):
+  weights_difference = df1_weights.subtract(df2_weights)
+  return weights_difference
 
-import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.styles import Alignment
-
-def save_weights_to_excel(weights_df, filename, sheet_name='Weights'):
-  try:
-    # Try to load existing workbook
-    workbook = load_workbook(filename)
-    if sheet_name in workbook.sheetnames:
-      # Remove existing sheet if it exists
-      del workbook[sheet_name]
-  except FileNotFoundError:
-    # Create new workbook if file doesn't exist
-    workbook = load_workbook()
-
-  worksheet = workbook.create_sheet(sheet_name)
-
-  for row_idx, (index, row) in enumerate(weights_df.iterrows(), 1):
-    # Write index value
-    worksheet.cell(row=row_idx, column=1, value=index)
-
-    # Write row values
-    for col_idx, value in enumerate(row, 2):
-      worksheet.cell(row=row_idx, column=col_idx, value=value)
-
-  for col_idx, column_name in enumerate(weights_df.columns, 2):
-    worksheet.cell(row=1, column=col_idx, value=column_name)
-  worksheet.cell(row=1, column=1, value=weights_df.index.name or 'Features')
-
-  worksheet.column_dimensions['A'].width = 30
-  for col_idx in range(2, len(weights_df.columns) + 2):
-    worksheet.column_dimensions[chr(64 + col_idx)].width = 15
-
-  for row in worksheet.iter_rows():
-    for cell in row:
-      cell.alignment = Alignment(wrap_text=True)
-
-  workbook.save(filename)
-  print(f"Weights successfully saved to {filename} in sheet '{sheet_name}'")
+def visualize_weights_difference(weights_difference):
+  plt.figure(figsize=(12, 8))
+  sns.heatmap(weights_difference, cmap='RdBu_r', center=0, annot=True, fmt='.2f')
+  plt.title('Difference in Weights Between Model 1 and Model 2')
+  plt.xlabel('Intents')
+  plt.ylabel('Features')
+  plt.tight_layout()
+  plt.show()
