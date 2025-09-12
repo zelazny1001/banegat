@@ -1,12 +1,53 @@
-def calculate_weights_difference(df1_weights, df2_weights):
-  weights_difference = df1_weights.subtract(df2_weights)
-  return weights_difference
+def heatmap_as_html_table(weights_difference, output_file='weights_difference_heatmap.html'):
+  def color_cells(val):
+    if val > 0:
+      return f'background-color: rgba(255,0,0,{min(0.8, abs(val) / abs(weights_difference.values.max()))})'
+    elif val < 0:
+      return f'background-color: rgba(0,0,255,{min(0.8, abs(val) / abs(weights_difference.values.min()))})'
+    else:
+      return 'background-color: white'
 
-def visualize_weights_difference(weights_difference):
-  plt.figure(figsize=(12, 8))
-  sns.heatmap(weights_difference, cmap='RdBu_r', center=0, annot=True, fmt='.2f')
-  plt.title('Difference in Weights Between Model 1 and Model 2')
-  plt.xlabel('Intents')
-  plt.ylabel('Features')
-  plt.tight_layout()
-  plt.show()
+  styled_df = weights_difference.style \
+    .applymap(color_cells) \
+    .format('{:.3f}') \
+    .set_table_styles([
+    {'selector': 'table', 'props': [('border-collapse', 'collapse')]},
+    {'selector': 'th, td', 'props': [('border', '1px solid black'),
+                                     ('padding', '2px'),
+                                     ('font-size', '8px'),
+                                     ('text-align', 'center')]},
+    {'selector': 'th', 'props': [('background-color', '#f0f0f0'),
+                                 ('position', 'sticky'),
+                                 ('top', '0'),
+                                 ('z-index', '100')]}
+  ]) \
+    .set_properties(**{'width': '50px', 'height': '20px'})
+
+  html_content = f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; }}
+            .dataframe {{ 
+                overflow: auto;
+                max-height: 100vh;
+                display: block;
+            }}
+            th {{
+                position: sticky;
+                top: 0;
+                background-color: #f0f0f0;
+                z-index: 100;
+            }}
+        </style>
+    </head>
+    <body>
+        <h2>Difference in Weights Between Model 1 and Model 2</h2>
+        {styled_df.to_html()}
+    </body>
+    </html>
+    """
+
+  with open(output_file, 'w') as f:
+    f.write(html_content)
+  return output_file
