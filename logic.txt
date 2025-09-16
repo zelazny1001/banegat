@@ -1,112 +1,576 @@
-def multi_model_convert_to_html(txt_file_path, html_file_path):
-    print(f"Processing multi-model file: {txt_file_path}")
-    
-    with open(txt_file_path, 'r', encoding='utf-8') as file:
-        header = next(file).strip().split('|')
-        header = [col.strip() for col in header]
-        num_models = len(header) // 3
-        
-        reader = csv.reader(file, delimiter='|')
-        all_rows = [ [field.strip() for field in row] for row in reader ]
+#multi_model_v1.py
 
-    # Compute GT total only once using first model's outcomes
+import csv
+from pathlib import Path
+import os
+from collections import defaultdict
+
+def OLD_multi_model_convert_to_html(txt_file_path, html_file_path):
+  print(f"Processing multi-model file: {txt_file_path}")
+
+  # Read and parse the file
+  with open(txt_file_path, 'r', encoding='utf-8') as file:
+    # Read the header line
+    header = next(file).strip().split('|')
+    header = [col.strip() for col in header]
+
+    # Determine number of models (each model has 3 columns: outcome, gt, hyp)
+    num_models = len(header) // 3
+
+    # Parse the content
+    reader = csv.reader(file, delimiter='|')
+    all_rows = []
+    for row in reader:
+      cleaned_row = [field.strip() for field in row]
+      all_rows.append(cleaned_row)
+
+  # Count operations for each model
+  model_stats = []
+  for i in range(num_models):
+    correct_count = 0
+    substitution_count = 0
+    deletion_count = 0
+    insertion_count = 0
     gt_total = 0
+
     for row in all_rows:
-        if len(row) >= 1:
-            outcome = row[0].upper()
-            if outcome in ("CORRECT", "SUBSTITUTION", "DELETION"):
-                gt_total += 1
+      if len(row) > i * 3:
+        outcome = row[i * 3].upper() if i * 3 < len(row) and row[i * 3] else ""
 
-    model_stats = []
-    for i in range(num_models):
-        correct_count = 0
-        substitution_count = 0
-        deletion_count = 0
-        insertion_count = 0
+        if outcome == "CORRECT":
+          correct_count += 1
+          if i == 0:  # Only count GT once
+            gt_total += 1
+        elif outcome == "SUBSTITUTION":
+          substitution_count += 1
+          if i == 0:
+            gt_total += 1
+        elif outcome == "DELETION":
+          deletion_count += 1
+          if i == 0:
+            gt_total += 1
+        elif outcome == "INSERTION":
+          insertion_count += 1
 
-        for row in all_rows:
-            if len(row) > i * 3:
-                outcome = row[i * 3].upper() if row[i * 3] else ""
-                if outcome == "CORRECT":
-                    correct_count += 1
-                elif outcome == "SUBSTITUTION":
-                    substitution_count += 1
-                elif outcome == "DELETION":
-                    deletion_count += 1
-                elif outcome == "INSERTION":
-                    insertion_count += 1
+    # Calculate total recognized words for this model
+    total_recognized = correct_count + substitution_count + insertion_count
+    model_stats.append({
+      'correct': correct_count,
+      'substitution': substitution_count,
+      'deletion': deletion_count,
+      'insertion': insertion_count,
+      'gt_total': gt_total,
+      'total_recognized': total_recognized
+    })
 
-        total_recognized = correct_count + substitution_count + insertion_count
-        model_stats.append({
-            'correct': correct_count,
-            'substitution': substitution_count,
-            'deletion': deletion_count,
-            'insertion': insertion_count,
-            'gt_total': gt_total,
-            'total_recognized': total_recognized
-        })
+  # Extract model names from header
+  model_names = []
+  for i in range(num_models):
+    # Try to extract model name from header
+    if i == 0:
+      model_names.append("Model 1")
+    else:
+      # Look for pattern like outcome2, outcome3, etc.
+      model_col_name = header[i * 3] if len(header) > i * 3 else f"Model {i + 1}"
+      if model_col_name.startswith('outcome'):
+        model_num = model_col_name.replace('outcome', '')
+        model_names.append(f"Model {model_num}")
+      else:
+        model_names.append(f"Model {i + 1}")
 
-    model_names = []
-    for i in range(num_models):
-        if i == 0:
-            model_names.append("Model 1")
-        else:
-            model_col_name = header[i * 3] if len(header) > i * 3 else f"Model {i+1}"
-            if model_col_name.startswith('outcome'):
-                model_num = model_col_name.replace('outcome', '')
-                model_names.append(f"Model {model_num}")
-            else:
-                model_names.append(f"Model {i+1}")
+  # Generate HTML content
+  html_content = ""
 
-    html_content = ""
-    for i, model_name in enumerate(model_names):
-        stats = model_stats[i]
-        html_content += f"<p style='font-family:Arial;font-size:8pt'>{model_name}&nbsp;&nbsp;C={stats['correct']}, S={stats['substitution']}, D={stats['deletion']}, I={stats['insertion']}, GT={stats['gt_total']}, TR={stats['total_recognized']}</p>\n"
+  # Add model headers - ONE LINE PER MODEL
+  for i, model_name in enumerate(model_names):
+    stats = model_stats[i]
+    html_content += f"<p style='font-family:Arial;font-size:8pt'>{model_name}&nbsp;&nbsp;C={stats['correct']}, S={stats['substitution']}, D={stats['deletion']}, I={stats['insertion']}, GT={stats['gt_total']}, TR={stats['total_recognized']}</p>\n"
 
-    html_content += "<table>\n<tbody>\n<tr>"
-    for i in range(num_models):
-        html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">outcome</th>"
-        html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">GT</th>"
-        html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">predicted</th>"
+  # Start table
+  html_content += "<table>\n<tbody>\n"
+
+  # Add table header row
+  html_content += "<tr>"
+  for i in range(num_models):
+    html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">outcome</th>"
+    html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">GT</th>"
+    html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">predicted</th>"
+  html_content += "</tr>\n"
+
+  # Add data rows - we need to process each row for all models
+  for row_idx in range(len(all_rows)):
+    html_content += "<tr>"
+
+    for model_idx in range(num_models):
+      col_idx = model_idx * 3
+
+      if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
+        outcome = all_rows[row_idx][col_idx].upper() if all_rows[row_idx][col_idx] else ""
+        gt = all_rows[row_idx][col_idx + 1] if col_idx + 1 < len(all_rows[row_idx]) else ""
+        predicted = all_rows[row_idx][col_idx + 2] if col_idx + 2 < len(all_rows[row_idx]) else ""
+      else:
+        outcome = ""
+        gt = ""
+        predicted = ""
+
+      # Determine background color and text color based on outcome
+      if outcome == "CORRECT":
+        bg_color = "#73f097"
+        text_color = "#000000"
+        short_outcome = "C"
+      elif outcome == "SUBSTITUTION":
+        bg_color = "#fafc5c"
+        text_color = "#000000"
+        short_outcome = "S"
+      elif outcome == "DELETION":
+        bg_color = "#ff0000"
+        text_color = "#ffffff"
+        short_outcome = "D"
+      elif outcome == "INSERTION":
+        bg_color = "#55a0e0"
+        text_color = "#ffffff"
+        short_outcome = "I"
+      else:
+        bg_color = "#ffffff"
+        text_color = "#000000"
+        short_outcome = outcome[0] if outcome else ""
+
+      html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{short_outcome}</td>"
+      html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{gt}</td>"
+      html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{predicted}</td>"
+
     html_content += "</tr>\n"
 
-    for row_idx in range(len(all_rows)):
-        html_content += "<tr>"
-        for model_idx in range(num_models):
-            col_idx = model_idx * 3
-            if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
-                outcome = all_rows[row_idx][col_idx].upper() if all_rows[row_idx][col_idx] else ""
-                gt = all_rows[row_idx][col_idx+1] if col_idx+1 < len(all_rows[row_idx]) else ""
-                predicted = all_rows[row_idx][col_idx+2] if col_idx+2 < len(all_rows[row_idx]) else ""
-            else:
-                outcome = ""
-                gt = ""
-                predicted = ""
+  html_content += "</tbody>\n</table>"
 
-            if outcome == "CORRECT":
-                bg_color = "#73f097"; text_color = "#000000"; short_outcome = "C"
-            elif outcome == "SUBSTITUTION":
-                bg_color = "#fafc5c"; text_color = "#000000"; short_outcome = "S"
-            elif outcome == "DELETION":
-                bg_color = "#ff0000"; text_color = "#ffffff"; short_outcome = "D"
-            elif outcome == "INSERTION":
-                bg_color = "#55a0e0"; text_color = "#ffffff"; short_outcome = "I"
-            else:
-                bg_color = "#ffffff"; text_color = "#000000"; short_outcome = outcome[0] if outcome else ""
+  # Write HTML to file
+  with open(html_file_path, 'w', encoding='utf-8') as html_file:
+    html_file.write(html_content)
 
-            html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{short_outcome}</td>"
-            html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{gt}</td>"
-            html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{predicted}</td>"
-        html_content += "</tr>\n"
+  print(f"Successfully converted {txt_file_path} to {html_file_path}")
+  print(f"Processed {num_models} models with {len(all_rows)} rows")
 
-    html_content += "</tbody>\n</table>"
+def multi_model_convert_to_html(txt_file_path, html_file_path):
+  print(f"Processing multi-model file: {txt_file_path}")
 
-    with open(html_file_path, 'w', encoding='utf-8') as html_file:
-        html_file.write(html_content)
+  with open(txt_file_path, 'r', encoding='utf-8') as file:
+    header = next(file).strip().split('|')
+    header = [col.strip() for col in header]
+    num_models = len(header) // 3
 
-    print(f"Successfully converted {txt_file_path} to {html_file_path}")
-    print(f"Processed {num_models} models with {len(all_rows)} rows")
+    reader = csv.reader(file, delimiter='|')
+    all_rows = [[field.strip() for field in row] for row in reader]
 
+  # Compute GT total only once using first model's outcomes
+  gt_total = 0
+  for row in all_rows:
+    if len(row) >= 1:
+      outcome = row[0].upper()
+      if outcome in ("CORRECT", "SUBSTITUTION", "DELETION"):
+        gt_total += 1
+
+  model_stats = []
+  for i in range(num_models):
+    correct_count = 0
+    substitution_count = 0
+    deletion_count = 0
+    insertion_count = 0
+
+    for row in all_rows:
+      if len(row) > i * 3:
+        outcome = row[i * 3].upper() if row[i * 3] else ""
+        if outcome == "CORRECT":
+          correct_count += 1
+        elif outcome == "SUBSTITUTION":
+          substitution_count += 1
+        elif outcome == "DELETION":
+          deletion_count += 1
+        elif outcome == "INSERTION":
+          insertion_count += 1
+
+    total_recognized = correct_count + substitution_count + insertion_count
+    model_stats.append({
+      'correct': correct_count,
+      'substitution': substitution_count,
+      'deletion': deletion_count,
+      'insertion': insertion_count,
+      'gt_total': gt_total,
+      'total_recognized': total_recognized
+    })
+
+  model_names = []
+  for i in range(num_models):
+    if i == 0:
+      model_names.append("Model 1")
+    else:
+      model_col_name = header[i * 3] if len(header) > i * 3 else f"Model {i + 1}"
+      if model_col_name.startswith('outcome'):
+        model_num = model_col_name.replace('outcome', '')
+        model_names.append(f"Model {model_num}")
+      else:
+        model_names.append(f"Model {i + 1}")
+
+  html_content = ""
+  for i, model_name in enumerate(model_names):
+    stats = model_stats[i]
+    html_content += f"<p style='font-family:Arial;font-size:8pt'>{model_name}&nbsp;&nbsp;C={stats['correct']}, S={stats['substitution']}, D={stats['deletion']}, I={stats['insertion']}, GT={stats['gt_total']}, TR={stats['total_recognized']}</p>\n"
+
+  html_content += "<table>\n<tbody>\n<tr>"
+  for i in range(num_models):
+    html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">outcome</th>"
+    html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">GT</th>"
+    html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">predicted</th>"
+  html_content += "</tr>\n"
+
+  for row_idx in range(len(all_rows)):
+    html_content += "<tr>"
+    for model_idx in range(num_models):
+      col_idx = model_idx * 3
+      if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
+        outcome = all_rows[row_idx][col_idx].upper() if all_rows[row_idx][col_idx] else ""
+        gt = all_rows[row_idx][col_idx + 1] if col_idx + 1 < len(all_rows[row_idx]) else ""
+        predicted = all_rows[row_idx][col_idx + 2] if col_idx + 2 < len(all_rows[row_idx]) else ""
+      else:
+        outcome = ""
+        gt = ""
+        predicted = ""
+
+      if outcome == "CORRECT":
+        bg_color = "#73f097";
+        text_color = "#000000";
+        short_outcome = "C"
+      elif outcome == "SUBSTITUTION":
+        bg_color = "#fafc5c";
+        text_color = "#000000";
+        short_outcome = "S"
+      elif outcome == "DELETION":
+        bg_color = "#ff0000";
+        text_color = "#ffffff";
+        short_outcome = "D"
+      elif outcome == "INSERTION":
+        bg_color = "#55a0e0";
+        text_color = "#ffffff";
+        short_outcome = "I"
+      else:
+        bg_color = "#ffffff";
+        text_color = "#000000";
+        short_outcome = outcome[0] if outcome else ""
+
+      html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{short_outcome}</td>"
+      html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{gt}</td>"
+      html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{predicted}</td>"
+    html_content += "</tr>\n"
+
+  html_content += "</tbody>\n</table>"
+
+  with open(html_file_path, 'w', encoding='utf-8') as html_file:
+    html_file.write(html_content)
+
+  print(f"Successfully converted {txt_file_path} to {html_file_path}")
+  print(f"Processed {num_models} models with {len(all_rows)} rows")
+
+def convert_txt_to_html(txt_file_path, html_file_path):
+  print(f"Processing single model file: {txt_file_path}")
+
+  # Counters for different types of operations
+  correct_count = 0
+  substitution_count = 0
+  deletion_count = 0
+  insertion_count = 0
+  gt_total = 0
+
+  # Read and process the text file
+  with open(txt_file_path, 'r', encoding='utf-8') as file:
+    # Skip the header line
+    next(file)
+
+    # Parse the pipe-delimited content
+    reader = csv.reader(file, delimiter='|')
+    rows = []
+    for row in reader:
+      # Strip whitespace from each field
+      cleaned_row = [field.strip() for field in row]
+      rows.append(cleaned_row)
+
+      # Count operation types
+      outcome = cleaned_row[0].upper()
+      if outcome == "CORRECT":
+        correct_count += 1
+        gt_total += 1
+      elif outcome == "SUBSTITUTION":
+        substitution_count += 1
+        gt_total += 1
+      elif outcome == "DELETION":
+        deletion_count += 1
+        gt_total += 1
+      elif outcome == "INSERTION":
+        insertion_count += 1
+
+  # Calculate total recognized words
+  total_recognized = correct_count + substitution_count + insertion_count
+
+  # Extract model name from filename
+  model_name = os.path.splitext(os.path.basename(txt_file_path))[0]
+
+  # Generate HTML content
+  html_content = f"""
+<p style='font-family:Arial;font-size:8pt'>{model_name}&nbsp;&nbsp;C={correct_count}, S={substitution_count}, D={deletion_count}, I={insertion_count}, GT={gt_total}, TR={total_recognized}</p>
+<table>
+<tbody>
+<tr><th style="font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;">outcome</th><th style="font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;">GT</th><th style="font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;">predicted</th></tr>
+"""
+
+  # Add rows for each operation
+  for row in rows:
+    outcome, gt, predicted = row
+
+    # Determine background color and text color based on outcome
+    if outcome.upper() == "CORRECT":
+      bg_color = "#73f097"
+      text_color = "#000000"
+      short_outcome = "C"
+    elif outcome.upper() == "SUBSTITUTION":
+      bg_color = "#fafc5c"
+      text_color = "#000000"
+      short_outcome = "S"
+    elif outcome.upper() == "DELETION":
+      bg_color = "#ff0000"
+      text_color = "#ffffff"
+      short_outcome = "D"
+    elif outcome.upper() == "INSERTION":
+      bg_color = "#55a0e0"
+      text_color = "#ffffff"
+      short_outcome = "I"
+    else:
+      bg_color = "#ffffff"
+      text_color = "#000000"
+      short_outcome = outcome[0]
+
+    html_content += f"""<tr><td style="font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};">{short_outcome}</td><td style="font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};">{gt}</td><td style="font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};">{predicted}</td></tr>
+"""
+
+  html_content += """</tbody>
+</table>"""
+
+  # Write HTML to file
+  with open(html_file_path, 'w', encoding='utf-8') as html_file:
+    html_file.write(html_content)
+
+  print(f"Successfully converted {txt_file_path} to {html_file_path}")
+
+# ... (existing functions remain unchanged until the new function) ...
+
+def account_for_common_gt(txt_file_path, html_file_path):
+  """
+  Convert multi-model results to HTML, grouping models with identical GTs together
+  """
+  print(f"Processing multi-model file with common GT grouping: {txt_file_path}")
+
+  with open(txt_file_path, 'r', encoding='utf-8') as file:
+    header = next(file).strip().split('|')
+    header = [col.strip() for col in header]
+    num_models = len(header) // 3
+
+    reader = csv.reader(file, delimiter='|')
+    all_rows = [[field.strip() for field in row] for row in reader]
+
+  # Compute GT total only once using first model's outcomes
+  gt_total = 0
+  for row in all_rows:
+    if len(row) >= 1:
+      outcome = row[0].upper()
+      if outcome in ("CORRECT", "SUBSTITUTION", "DELETION"):
+        gt_total += 1
+
+  # Analyze which models have identical GTs across all rows
+  gt_patterns = []
+  for row_idx in range(len(all_rows)):
+    row_gt_pattern = []
+    for model_idx in range(num_models):
+      col_idx = model_idx * 3 + 1  # GT column for this model
+      if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
+        gt = all_rows[row_idx][col_idx]
+      else:
+        gt = ""
+      row_gt_pattern.append(gt)
+    gt_patterns.append(row_gt_pattern)
+
+  # Find models that always have the same GT
+  model_groups = defaultdict(list)
+  for model_idx in range(num_models):
+    # Create a signature for this model's GT pattern
+    signature = tuple(gt_patterns[row_idx][model_idx] for row_idx in range(len(gt_patterns)))
+    model_groups[signature].append(model_idx)
+
+  # Reorder models: group those with identical GTs together
+  model_order = []
+  for signature, model_indices in model_groups.items():
+    model_order.extend(model_indices)
+
+  # Calculate statistics for each model
+  model_stats = []
+  for i in range(num_models):
+    correct_count = 0
+    substitution_count = 0
+    deletion_count = 0
+    insertion_count = 0
+
+    for row in all_rows:
+      if len(row) > i * 3:
+        outcome = row[i * 3].upper() if row[i * 3] else ""
+        if outcome == "CORRECT":
+          correct_count += 1
+        elif outcome == "SUBSTITUTION":
+          substitution_count += 1
+        elif outcome == "DELETION":
+          deletion_count += 1
+        elif outcome == "INSERTION":
+          insertion_count += 1
+
+    total_recognized = correct_count + substitution_count + insertion_count
+    model_stats.append({
+      'correct': correct_count,
+      'substitution': substitution_count,
+      'deletion': deletion_count,
+      'insertion': insertion_count,
+      'gt_total': gt_total,
+      'total_recognized': total_recognized
+    })
+
+  # Extract model names from header
+  model_names = []
+  for i in range(num_models):
+    if i == 0:
+      model_names.append("Model 1")
+    else:
+      model_col_name = header[i * 3] if len(header) > i * 3 else f"Model {i + 1}"
+      if model_col_name.startswith('outcome'):
+        model_num = model_col_name.replace('outcome', '')
+        model_names.append(f"Model {model_num}")
+      else:
+        model_names.append(f"Model {i + 1}")
+
+  # Generate HTML content
+  html_content = ""
+  for i, model_name in enumerate(model_names):
+    stats = model_stats[i]
+    html_content += f"<p style='font-family:Arial;font-size:8pt'>{model_name}&nbsp;&nbsp;C={stats['correct']}, S={stats['substitution']}, D={stats['deletion']}, I={stats['insertion']}, GT={stats['gt_total']}, TR={stats['total_recognized']}</p>\n"
+
+  html_content += "<table>\n<tbody>\n<tr>"
+
+  # Create header row based on model groups
+  for signature, model_indices in model_groups.items():
+    # Add a GT column for this group
+    html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">GT</th>"
+
+    # Add columns for each model in this group
+    for model_idx in model_indices:
+      html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">outcome{model_idx + 1 if model_idx > 0 else ''}</th>"
+      html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">predicted{model_idx + 1 if model_idx > 0 else ''}</th>"
+
+  html_content += "</tr>\n"
+
+  # Add data rows
+  for row_idx in range(len(all_rows)):
+    html_content += "<tr>"
+
+    # For each group of models with identical GTs
+    for signature, model_indices in model_groups.items():
+      # Get the GT from the first model in this group
+      first_model_idx = model_indices[0]
+      gt_col_idx = first_model_idx * 3 + 1
+      gt = all_rows[row_idx][gt_col_idx] if row_idx < len(all_rows) and gt_col_idx < len(all_rows[row_idx]) else ""
+
+      # Add the GT column for this group
+      html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;\">{gt}</td>"
+
+      # Add columns for each model in this group
+      for model_idx in model_indices:
+        col_idx = model_idx * 3
+        if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
+          outcome = all_rows[row_idx][col_idx].upper() if all_rows[row_idx][col_idx] else ""
+          predicted = all_rows[row_idx][col_idx + 2] if col_idx + 2 < len(all_rows[row_idx]) else ""
+        else:
+          outcome = ""
+          predicted = ""
+
+        # Determine background color and text color based on outcome
+        if outcome == "CORRECT":
+          bg_color = "#73f097"
+          text_color = "#000000"
+          short_outcome = "C"
+        elif outcome == "SUBSTITUTION":
+          bg_color = "#fafc5c"
+          text_color = "#000000"
+          short_outcome = "S"
+        elif outcome == "DELETION":
+          bg_color = "#ff0000"
+          text_color = "#ffffff"
+          short_outcome = "D"
+        elif outcome == "INSERTION":
+          bg_color = "#55a0e0"
+          text_color = "#ffffff"
+          short_outcome = "I"
+        else:
+          bg_color = "#ffffff"
+          text_color = "#000000"
+          short_outcome = outcome[0] if outcome else ""
+
+        html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{short_outcome}</td>"
+        html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{predicted}</td>"
+
+    html_content += "</tr>\n"
+
+  html_content += "</tbody>\n</table>"
+
+  with open(html_file_path, 'w', encoding='utf-8') as html_file:
+    html_file.write(html_content)
+
+  print(f"Successfully converted {txt_file_path} to {html_file_path} with common GT grouping")
+  print(f"Processed {num_models} models with {len(all_rows)} rows")
+  print(f"Found {len(model_groups)} distinct GT patterns")
+
+def main():
+  # Define directories
+  ALIGNMENT_DIR = Path("j:/projects/sdi/txt")
+  HTML_DIR = Path("j:/projects/sdi/html")
+
+  # Create output directory if it doesn't exist
+  HTML_DIR.mkdir(parents=True, exist_ok=True)
+
+  print(f"Starting conversion from {ALIGNMENT_DIR} to {HTML_DIR}")
+
+  # Process all .txt files in the input directory
+  txt_files = list(ALIGNMENT_DIR.glob("*.txt"))
+
+  if not txt_files:
+    print("No .txt files found in the input directory.")
+    return
+
+  print(f"Found {len(txt_files)} .txt file(s) to process")
+
+  for i, txt_file in enumerate(txt_files, 1):
+    print(f"\nProcessing file {i} of {len(txt_files)}")
+    html_file = HTML_DIR / f"{txt_file.stem}.html"
+
+    # Check if file has multiple models by examining the header
+    with open(txt_file, 'r', encoding='utf-8') as f:
+      header = f.readline().strip()
+      num_columns = len(header.split('|'))
+
+    if num_columns > 3:
+      # Multiple models detected - use the common GT version
+      account_for_common_gt(txt_file, html_file)
+    else:
+      # Single model
+      convert_txt_to_html(txt_file, html_file)
+
+  print(f"\nConversion complete. Processed {len(txt_files)} file(s).")
+
+if __name__ == "__main__":
+  main()
+  
+#==============================================================
 
 
 # =============================================================
