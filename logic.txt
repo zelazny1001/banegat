@@ -1,0 +1,243 @@
+def multi_model_convert_to_html(txt_file_path, html_file_path):
+    print(f"Processing multi-model file: {txt_file_path}")
+    
+    with open(txt_file_path, 'r', encoding='utf-8') as file:
+        header = next(file).strip().split('|')
+        header = [col.strip() for col in header]
+        num_models = len(header) // 3
+        
+        reader = csv.reader(file, delimiter='|')
+        all_rows = [ [field.strip() for field in row] for row in reader ]
+
+    # Compute GT total only once using first model's outcomes
+    gt_total = 0
+    for row in all_rows:
+        if len(row) >= 1:
+            outcome = row[0].upper()
+            if outcome in ("CORRECT", "SUBSTITUTION", "DELETION"):
+                gt_total += 1
+
+    model_stats = []
+    for i in range(num_models):
+        correct_count = 0
+        substitution_count = 0
+        deletion_count = 0
+        insertion_count = 0
+
+        for row in all_rows:
+            if len(row) > i * 3:
+                outcome = row[i * 3].upper() if row[i * 3] else ""
+                if outcome == "CORRECT":
+                    correct_count += 1
+                elif outcome == "SUBSTITUTION":
+                    substitution_count += 1
+                elif outcome == "DELETION":
+                    deletion_count += 1
+                elif outcome == "INSERTION":
+                    insertion_count += 1
+
+        total_recognized = correct_count + substitution_count + insertion_count
+        model_stats.append({
+            'correct': correct_count,
+            'substitution': substitution_count,
+            'deletion': deletion_count,
+            'insertion': insertion_count,
+            'gt_total': gt_total,
+            'total_recognized': total_recognized
+        })
+
+    model_names = []
+    for i in range(num_models):
+        if i == 0:
+            model_names.append("Model 1")
+        else:
+            model_col_name = header[i * 3] if len(header) > i * 3 else f"Model {i+1}"
+            if model_col_name.startswith('outcome'):
+                model_num = model_col_name.replace('outcome', '')
+                model_names.append(f"Model {model_num}")
+            else:
+                model_names.append(f"Model {i+1}")
+
+    html_content = ""
+    for i, model_name in enumerate(model_names):
+        stats = model_stats[i]
+        html_content += f"<p style='font-family:Arial;font-size:8pt'>{model_name}&nbsp;&nbsp;C={stats['correct']}, S={stats['substitution']}, D={stats['deletion']}, I={stats['insertion']}, GT={stats['gt_total']}, TR={stats['total_recognized']}</p>\n"
+
+    html_content += "<table>\n<tbody>\n<tr>"
+    for i in range(num_models):
+        html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">outcome</th>"
+        html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">GT</th>"
+        html_content += f"<th style=\"font-family:Arial;font-size:7pt;border:1px dotted black;font-weight:bold;\">predicted</th>"
+    html_content += "</tr>\n"
+
+    for row_idx in range(len(all_rows)):
+        html_content += "<tr>"
+        for model_idx in range(num_models):
+            col_idx = model_idx * 3
+            if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
+                outcome = all_rows[row_idx][col_idx].upper() if all_rows[row_idx][col_idx] else ""
+                gt = all_rows[row_idx][col_idx+1] if col_idx+1 < len(all_rows[row_idx]) else ""
+                predicted = all_rows[row_idx][col_idx+2] if col_idx+2 < len(all_rows[row_idx]) else ""
+            else:
+                outcome = ""
+                gt = ""
+                predicted = ""
+
+            if outcome == "CORRECT":
+                bg_color = "#73f097"; text_color = "#000000"; short_outcome = "C"
+            elif outcome == "SUBSTITUTION":
+                bg_color = "#fafc5c"; text_color = "#000000"; short_outcome = "S"
+            elif outcome == "DELETION":
+                bg_color = "#ff0000"; text_color = "#ffffff"; short_outcome = "D"
+            elif outcome == "INSERTION":
+                bg_color = "#55a0e0"; text_color = "#ffffff"; short_outcome = "I"
+            else:
+                bg_color = "#ffffff"; text_color = "#000000"; short_outcome = outcome[0] if outcome else ""
+
+            html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{short_outcome}</td>"
+            html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{gt}</td>"
+            html_content += f"<td style=\"font-family:Arial;font-size:7pt;border:1px dotted black;background-color:{bg_color};color:{text_color};\">{predicted}</td>"
+        html_content += "</tr>\n"
+
+    html_content += "</tbody>\n</table>"
+
+    with open(html_file_path, 'w', encoding='utf-8') as html_file:
+        html_file.write(html_content)
+
+    print(f"Successfully converted {txt_file_path} to {html_file_path}")
+    print(f"Processed {num_models} models with {len(all_rows)} rows")
+
+
+
+# =============================================================
+#bulk_response_for_target
+
+import requests
+import pandas as pd
+import openpyxl
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+THIS_IS_A_TEST = False
+FILE_XLSX = "bulk_test_for_target2.xlsx"
+TARGET_SHEET = "target"
+URL = "http://localhost:9000/rest/utility?utterance="
+CHUNK_SIZE = 100
+HEADERS = ["Utterance", "intent", "score", "features"]
+
+def fetch_test_data(utterance):
+  last_int = int(utterance.split()[-1])
+  rem = last_int % 10
+  intent = f"intent_{rem}"
+  score = last_int/20
+  score = float(f"{score:.2f}")
+  features = "feat1, feat2, feat3"
+  return {"intent": intent, "score": score, "features": features}
+
+def get_json_data(utterance):
+    if THIS_IS_A_TEST:
+      return fetch_test_data(utterance)
+    response = requests.get(f"{URL}{utterance}", verify=False)
+    response.raise_for_status()
+    data = response.json()
+    for entry in data.get("activityLog", []):
+        if "Report for component RESPONSE_BUILDER" in entry.get("message", ""):
+            input_data = entry.get("input", {})
+            intent_info = input_data.get("intent", {}).get("IntentInfo", [])
+            if intent_info:
+                first = intent_info[0]
+                features = first.get("features", [])
+                features_str = "[" + ", ".join(f"'{f}'" for f in features) + "]"
+                return {"intent": first.get("intent"), "score": first.get("score"), "features": features_str}
+    return {"intent": None, "score": None, "features": None}
+
+def get_last_completed_row(ws):
+    max_row = ws.max_row
+    for i in range(max_row, 1, -1):
+        if all(ws[f"{col}{i}"].value not in [None, ""] for col in "ABCD"):
+            return i
+    return 1
+
+def append_chunk_to_sheet(ws, df_chunk, start_excel_row):
+    for excel_row_idx, df_row in enumerate(df_chunk.itertuples(index=False), start=start_excel_row):
+        ws.cell(row=excel_row_idx, column=1, value=df_row.Utterance)
+        ws.cell(row=excel_row_idx, column=2, value=df_row.intent)
+        ws.cell(row=excel_row_idx, column=3, value=df_row.score)
+        ws.cell(row=excel_row_idx, column=4, value=df_row.features)
+
+def format_sheet(ws):
+  if THIS_IS_A_TEST:
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 25
+    ws.column_dimensions["C"].width = 25
+    ws.column_dimensions["D"].width = 30
+  else:
+    ws.column_dimensions["A"].width = 100
+    ws.column_dimensions["B"].width = 35
+    ws.column_dimensions["C"].width = 20
+    ws.column_dimensions["D"].width = 150
+  for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=4, max_col=4):
+      for cell in row:
+          cell.alignment = openpyxl.styles.Alignment(wrap_text=True)
+
+def ensure_valid_header(ws):
+    values = [ws[f"{col}1"].value for col in "ABCD"]
+    if values != HEADERS:
+        for col_index, header in enumerate(HEADERS, start=1):
+            ws.cell(row=1, column=col_index, value=header)
+
+def main():
+  wb = openpyxl.load_workbook(FILE_XLSX)
+  if TARGET_SHEET not in wb.sheetnames:
+    print(f"Worksheet '{TARGET_SHEET}' not found. Exiting.")
+    return
+
+  ws = wb[TARGET_SHEET]
+  ensure_valid_header(ws)
+
+  row = 2  # Start from row 2 (skip header)
+  chunk = []
+  chunk_start_row = None
+
+  while row <= ws.max_row:
+    val_a = ws[f"A{row}"].value
+    val_b = ws[f"B{row}"].value
+    val_c = ws[f"C{row}"].value
+    val_d = ws[f"D{row}"].value
+
+    if all(v in [None, ""] for v in (val_a, val_b, val_c, val_d)):
+      ws.delete_rows(row)
+      continue
+
+    if val_a not in [None, ""] and (val_b in [None, ""] or val_c in [None, ""] or val_d in [None, ""]):
+      utterance = str(val_a).strip("[]")
+      if utterance.lower() in ("", "nan"):
+        row += 1
+        continue
+      print(f"[{row}] Processing: {utterance}")
+      result = get_json_data(utterance)
+      chunk.append([utterance, result["intent"], result["score"], result["features"]])
+      if chunk_start_row is None:
+        chunk_start_row = row
+      if len(chunk) == CHUNK_SIZE:
+        df_chunk = pd.DataFrame(chunk, columns=HEADERS)
+        append_chunk_to_sheet(ws, df_chunk, start_excel_row=chunk_start_row)
+        wb.save(FILE_XLSX)
+        row = chunk_start_row + CHUNK_SIZE
+        chunk = []
+        chunk_start_row = None
+        continue
+
+    row += 1
+
+  if chunk:
+    df_chunk = pd.DataFrame(chunk, columns=HEADERS)
+    append_chunk_to_sheet(ws, df_chunk, start_excel_row=chunk_start_row)
+    wb.save(FILE_XLSX)
+
+  format_sheet(ws)
+  wb.save(FILE_XLSX)
+
+if __name__ == "__main__":
+    main()
