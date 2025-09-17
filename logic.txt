@@ -1,4 +1,4 @@
-# wer_sdi_visualization.py
+# wer_sdi_txt_to_html.py
 # convert txt version of WER SID alignment generated using jiwer into html
 
 # multi_model_v1.py
