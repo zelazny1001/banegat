@@ -201,6 +201,128 @@ if __name__ == "__main__":
   main(ALIGNMENT_DIR, HTML_DIR)
 #==============================================================
 
+# wer_multiple_models_to_txt_alignments.py
+
+from __future__ import annotations
+
+from pathlib import Path
+from openpyxl import load_workbook
+from nltk_jiwer_utils import get_jiwer_result
+
+SPREADSHEET_DIR = Path("j:/projects/sheet-logic/test-sheets/")
+SPREADSHEET_NAME = "test_multiple_models.xlsx" #"test_4_col.xlsx"
+TARGET_WORKSHEET = "multiple_models" #"base-vs-engine"
+NUMBER_OF_MODELS = 5  # Global variable to set number of model columns
+ALIGNMENT_DIR = Path("j:/projects/sdi/multiple-model-alignments/")
+
+def load_target_rows() -> list[dict[str, str]]:
+  path = SPREADSHEET_DIR / SPREADSHEET_NAME
+  workbook = load_workbook(path)
+  worksheet = workbook[TARGET_WORKSHEET]
+  headers = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
+  rows = []
+  for row in worksheet.iter_rows(min_row=2, values_only=True):
+    row_dict = {headers[i]: str(row[i]) if row[i] is not None else "" for i in range(len(headers))}
+    rows.append(row_dict)
+  return rows
+
+def get_model_columns(headers: list[str]) -> list[str]:
+  """Extract model column names from headers"""
+  # First two columns are always ID and GT
+  return headers[2:2 + NUMBER_OF_MODELS]
+
+def generate_alignment_path(row_id: str) -> Path:
+  return ALIGNMENT_DIR / f"{row_id}.txt"
+
+def write_custom_alignments_to_file(header: str, lines: list[str], file_path: str) -> None:
+  """Custom file writer that supports dynamic headers for any number of models"""
+  with open(file_path, "w", encoding="utf-8") as f:
+    f.write(f"{header}\n")
+    for line in lines:
+      f.write(f"{line}\n")
+
+def get_row_values(alignment_row: str) -> tuple[str, str, str]:
+  """Parse a single alignment row into outcome, gt, hyp components"""
+  parts = [p.strip() for p in alignment_row.split("|")]
+  if len(parts) != 3:
+    return ("", "", "")
+  return tuple(parts)
+
+def get_single_model_alignment(gt: str, hyp: str) -> list[tuple[str, str, str]]:
+  """Get alignment details for a single model compared to ground truth"""
+  jiwer_result = get_jiwer_result(gt, hyp)
+  alignment_rows = jiwer_result.get("alignment", [])
+
+  alignment_details = []
+  for row in alignment_rows:
+    outcome, gt_val, hyp_val = get_row_values(row)
+    alignment_details.append((outcome, gt_val, hyp_val))
+
+  return alignment_details
+
+def process_alignment_row(row: dict[str, str], model_columns: list[str]) -> None:
+  row_id = row["ID"]
+  gt = row["GT"]
+
+  # Get all model hypotheses
+  hypotheses = [row[model_col] for model_col in model_columns]
+
+  if len(hypotheses) < 1:
+    raise ValueError("At least 1 model required for alignment")
+
+  # Get alignments for each model compared to ground truth
+  all_alignments = []
+  for hyp in hypotheses:
+    alignment = get_single_model_alignment(gt, hyp)
+    all_alignments.append(alignment)
+
+  # Create appropriate header based on number of models
+  header_parts = []
+  for i, model_col in enumerate(model_columns):
+    # Use actual model column names from spreadsheet
+    model_name = model_col.replace("-", "_")  # Sanitize for column header
+    # header_parts.extend([f"outcome{i + 1}", "gt", f"{model_name}"])
+    header_parts.extend([f" ", "GT", f"{model_name}"])
+
+  custom_header = " | ".join(header_parts)
+
+  # Combine alignments from all models
+  max_lines = max(len(align) for align in all_alignments)
+  output_lines = []
+
+  for i in range(max_lines):
+    line_parts = []
+    for alignment in all_alignments:
+      if i < len(alignment):
+        outcome, gt_val, hyp_val = alignment[i]
+        line_parts.extend([outcome, gt_val, hyp_val])
+      else:
+        line_parts.extend(["", "", ""])  # Empty fields for missing alignments
+
+    output_lines.append(" | ".join(line_parts))
+
+  # Write the file with custom header
+  write_custom_alignments_to_file(custom_header, output_lines, str(generate_alignment_path(row_id)))
+
+def main() -> None:
+  ALIGNMENT_DIR.mkdir(parents=True, exist_ok=True)
+  rows = load_target_rows()
+
+  # Get headers to identify model columns
+  path = SPREADSHEET_DIR / SPREADSHEET_NAME
+  workbook = load_workbook(path)
+  worksheet = workbook[TARGET_WORKSHEET]
+  headers = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
+
+  model_columns = get_model_columns(headers)
+
+  print(f"Found {len(model_columns)} model columns: {model_columns}")
+
+  for row in rows:
+    process_alignment_row(row, model_columns)
+
+if __name__ == "__main__":
+  main()
 
 # =============================================================
 #bulk_response_for_target
