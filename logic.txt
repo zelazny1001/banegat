@@ -1,45 +1,6 @@
-@startuml
-!theme plain
-skinparam sequenceMessageAlign center
-
-title WER Multi-Model Analysis Pipeline
-
-actor User
-participant "wer_multiple_models\n_to_sdi_txt_alignments.py" as Generator
-participant "Excel Spreadsheet" as Excel
-participant "nltk_jiwer_utils.py" as Utils
-participant "TXT Files" as TXT
-participant "wer_sdi_txt_to_html.py" as Converter
-participant "HTML Files" as HTML
-
-User -> Generator: Execute
-activate Generator
-
-Generator -> Excel: Load spreadsheet data
-Excel --> Generator: Headers + Rows (ID, GT, Model1...ModelN)
-
-Generator -> Utils: get_jiwer_result(gt, hypothesis)
-Utils --> Generator: Alignment results (outcome, gt, predicted)
-
-Generator -> TXT: Write alignment files
-note right: Pipe-delimited format:\noutcome | GT | predicted
-
-deactivate Generator
-
-User -> Converter: Execute
-activate Converter
-
-Converter -> TXT: Read alignment files
-TXT --> Converter: Header + alignment rows
-
-Converter -> Converter: calculate_model_stats()
-note right: Calculate WER, counts
-
-Converter -> HTML: Write HTML visualization
-note right: Summary table + color-coded alignments
-
-deactivate Converter
-
-User -> HTML: View results
-
-@enduml
+  public static Outcome createStub() {
+    Map<String, Double> outcomes = new HashMap<>();
+    outcomes.put("intent1", 0.4 + new Random().nextDouble() * (0.98 - 0.4));
+    List<String> features = Arrays.asList("feat1","feat2","feat3","feat4","feat5");
+    return new Outcome(outcomes, features);
+  }
