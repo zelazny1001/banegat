@@ -1,6 +1,86 @@
-  public static Outcome createStub() {
-    Map<String, Double> outcomes = new HashMap<>();
-    outcomes.put("intent1", 0.4 + new Random().nextDouble() * (0.98 - 0.4));
-    List<String> features = Arrays.asList("feat1","feat2","feat3","feat4","feat5");
-    return new Outcome(outcomes, features);
-  }
+package com.config.structure.formation;
+
+public final class TransformerConfig {
+    private final String nameOfVariation;
+    private final String status;
+    private final String location;
+
+    public TransformerConfig(String variationName, String status, String location) {
+        this.nameOfVariation = variationName;
+        this.status = status;
+        this.location = location;
+    }
+
+    public String getNameOfVariation() {
+        return nameOfVariation;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public String getLocation() {
+        return location;
+    }
+
+    public boolean isEnabled() {
+        return status != null && status.equalsIgnoreCase("enabled");
+    }
+}
+
+// =============
+
+package com.config.structure.formation;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public final class TransformerConfigs {
+    private static final Logger logger = LoggerFactory.getLogger(TransformerConfigs.class);
+
+    private final List<TransformerConfig> variations;
+
+    public TransformerConfigs(String configurationString) {
+        this.variations = parseConfiguration(configurationString);
+    }
+
+    private List<TransformerConfig> parseConfiguration(String configurationString) {
+        List<TransformerConfig> parsedVariations = new ArrayList<>();
+
+        if (configurationString == null || configurationString.trim().isEmpty()) {
+            return parsedVariations;
+        }
+
+        String[] singleVariation = configurationString.split("\\|");
+
+        for (String variationConfig : singleVariation) {
+            String[] variationConfigParts = variationConfig.trim().split(",");
+
+            if (variationConfigParts.length == 3) {
+                String name = variationConfigParts[0].trim();
+                String status = variationConfigParts[1].trim();
+                String location = variationConfigParts[2].trim();
+
+                TransformerConfig variation = new TransformerConfig(name, status, location);
+                parsedVariations.add(variation);
+            } else {
+                logger.info("Malformed variation ignored: '{}'. Expected format: 'name, status, location'", variationConfig);
+            }
+        }
+
+        return parsedVariations;
+    }
+
+    public List<TransformerConfig> getVariations() {
+        return variations;
+    }
+
+    public void rebuildVariations(String configurationString) {
+        variations.clear();
+        List<TransformerConfig> newVariations = parseConfiguration(configurationString);
+        variations.addAll(newVariations);
+    }
+}
