@@ -1,6 +1,0 @@
-@staticmethod
-def _normalize_week_based(rows: list[list[str]], prefix: str) -> str:
-    start_day = rows[0][0][-4:]      # Get start date from first row
-    end_day = rows[-1][0][-4:]       # Get end date from last row
-    year = datetime.now().year
-    return f"{prefix}_{start_day}_thru_{end_day}_{year}"
