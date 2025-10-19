@@ -1,0 +1,26 @@
+import csv
+
+def wide_combiner(file1_path, file2_path, output_path):
+  def detect_delimiter(file_path):
+    with open(file_path, 'r') as f:
+      first_line = f.readline()
+      return '\t' if '\t' in first_line else ','
+
+  delim1 = detect_delimiter(file1_path)
+  delim2 = detect_delimiter(file2_path)
+
+  with open(file1_path, 'r') as f1, open(file2_path, 'r') as f2:
+    reader1 = list(csv.reader(f1, delimiter=delim1))
+    reader2 = list(csv.reader(f2, delimiter=delim2))
+
+    if len(reader1) != len(reader2):
+      raise ValueError(
+        f"Row count mismatch: {file1_path} has {len(reader1)} rows, {file2_path} has {len(reader2)} rows")
+
+    combined_rows = [row1 + row2 for row1, row2 in zip(reader1, reader2)]
+
+  with open(output_path, 'w', newline='') as out:
+    writer = csv.writer(out)
+    writer.writerows(combined_rows)
+
+wide_combiner("a.txt", "b.txt", "c.txt")
