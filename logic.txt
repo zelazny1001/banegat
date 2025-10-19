@@ -1,9 +1,0 @@
-dated_filename = f"current_precision_data_{datetime.now().strftime('%Y%m%d')}.csv"
-f = open(dated_filename, 'w')
-f.write("Threshold,label,TP,FN,FP,TN\n")
-
-for label, counts in by_label.items():
-    printf("{threshold}, {label}, {totals.tp}, {totals.fn}, {totals.fp}, {totals.tn}")
-    f.write(f"{threshold},{label},{totals.tp},{totals.fn},{totals.fp},{totals.tn}\n")
-
-f.close()
