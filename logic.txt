@@ -1,44 +1,43 @@
-# threshold_grid_generator.py
-
-import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment
-from typing import Dict, List, Tuple
-import sys
-
-class WorksheetData:
-  def __init__(self, thresholds: List[float], precisions: Dict[float, float],
-               tp_fn_fp_tn_total: int):
-    self.thresholds = thresholds
-    self.precisions = precisions
-    self.tp_fn_fp_tn_total = tp_fn_fp_tn_total
-
-class GridData:
-  def __init__(self, thresholds: List[float], values: List[List[float]],
-               worksheet1_name: str, worksheet2_name: str):
-    self.thresholds = thresholds
-    self.values = values
-    self.worksheet1_name = worksheet1_name
-    self.worksheet2_name = worksheet2_name
-
 class DataReader:
   def __init__(self, workbook_path: str):
     self.workbook_path = workbook_path
 
+  def find_column_indices(self, worksheet) -> Dict[str, int]:
+    headers = [cell.value for cell in worksheet[1]]
+
+    required_columns = ['threshold', 'micro precision', 'TP', 'FN', 'FP', 'TN']
+    column_indices = {}
+
+    for col_name in required_columns:
+      try:
+        column_indices[col_name] = headers.index(col_name)
+      except ValueError:
+        print(f"ERROR: Required column '{col_name}' not found in worksheet")
+        print(f"  Available columns: {headers}")
+        sys.exit(1)
+
+    return column_indices
+
   def read_worksheet(self, worksheet_name: str) -> WorksheetData:
     workbook = openpyxl.load_workbook(self.workbook_path)
     worksheet = workbook[worksheet_name]
+
+    col_indices = self.find_column_indices(worksheet)
 
     thresholds = []
     precisions = {}
     totals = set()
 
     for row in worksheet.iter_rows(min_row=2, values_only=True):
-      if row[0] is None:
+      if row[col_indices['threshold']] is None:
         continue
 
-      threshold = row[0]
-      precision = row[1]
-      tp, fn, fp, tn = row[2], row[3], row[4], row[5]
+      threshold = row[col_indices['threshold']]
+      precision = row[col_indices['micro precision']]
+      tp = row[col_indices['TP']]
+      fn = row[col_indices['FN']]
+      fp = row[col_indices['FP']]
+      tn = row[col_indices['TN']]
 
       total = tp + fn + fp + tn
       totals.add(total)
@@ -68,139 +67,3 @@ class DataReader:
       sys.exit(1)
 
     return data1, data2
-
-class GridCalculator:
-  def calculate(self, data1: WorksheetData, data2: WorksheetData,
-                start_threshold: float, end_threshold: float,
-                worksheet1_name: str, worksheet2_name: str) -> GridData:
-    filtered_thresholds = [t for t in data1.thresholds
-                           if start_threshold <= t <= end_threshold]
-    filtered_thresholds.sort()
-
-    n = len(filtered_thresholds)
-    values = [[0.0] * n for _ in range(n)]
-
-    total1 = data1.tp_fn_fp_tn_total
-    total2 = data2.tp_fn_fp_tn_total
-    combined_total = total1 + total2
-
-    for i, threshold_vertical in enumerate(filtered_thresholds):
-      precision1 = data1.precisions[threshold_vertical]
-      weighted1 = precision1 * total1
-
-      for j, threshold_horizontal in enumerate(filtered_thresholds):
-        precision2 = data2.precisions[threshold_horizontal]
-        weighted2 = precision2 * total2
-
-        weighted_avg = (weighted1 + weighted2) / combined_total
-        values[i][j] = weighted_avg
-
-    return GridData(filtered_thresholds, values, worksheet1_name, worksheet2_name)
-
-class StyleFormatter:
-  def __init__(self):
-    self.font_aptos_9 = Font(name='Aptos', size=9)
-    self.font_aptos_9_bold = Font(name='Aptos', size=9, bold=True)
-    self.light_green_fill = PatternFill(start_color='90EE90', end_color='90EE90',
-                                        fill_type='solid')
-    self.center_alignment = Alignment(horizontal='center', vertical='center')
-    self.rotated_alignment = Alignment(horizontal='center', vertical='center',
-                                       text_rotation=180)
-
-  def format(self, worksheet: openpyxl.worksheet.worksheet.Worksheet,
-             grid_data: GridData) -> None:
-    n = len(grid_data.thresholds)
-    max_value = max(max(row) for row in grid_data.values)
-
-    worksheet.cell(row=1, column=1, value=None)
-
-    last_col = n + 2
-    last_row = n + 2
-
-    worksheet.merge_cells(start_row=1, start_column=2, end_row=1, end_column=last_col)
-    cell = worksheet.cell(row=1, column=2, value=grid_data.worksheet2_name)
-    cell.font = self.font_aptos_9_bold
-    cell.alignment = self.center_alignment
-
-    worksheet.merge_cells(start_row=2, start_column=1, end_row=last_row, end_column=1)
-    cell = worksheet.cell(row=2, column=1, value=grid_data.worksheet1_name)
-    cell.font = self.font_aptos_9_bold
-    cell.alignment = self.rotated_alignment
-
-    worksheet.cell(row=2, column=2, value=None)
-
-    for j, threshold in enumerate(grid_data.thresholds, start=3):
-      cell = worksheet.cell(row=2, column=j, value=threshold)
-      cell.font = self.font_aptos_9_bold
-      cell.alignment = self.center_alignment
-
-    for i, threshold in enumerate(grid_data.thresholds, start=3):
-      cell = worksheet.cell(row=i, column=2, value=threshold)
-      cell.font = self.font_aptos_9_bold
-      cell.alignment = self.center_alignment
-
-    for i in range(n):
-      for j in range(n):
-        value = grid_data.values[i][j]
-        cell = worksheet.cell(row=i + 3, column=j + 3, value=value)
-        cell.font = self.font_aptos_9
-        cell.number_format = '0.000'
-        cell.alignment = self.center_alignment
-
-        if abs(value - max_value) < 1e-9:
-          cell.fill = self.light_green_fill
-
-class WorksheetWriter:
-  def __init__(self, workbook_path: str):
-    self.workbook_path = workbook_path
-
-  def write(self, grid_worksheet_name: str, grid_data: GridData) -> None:
-    workbook = openpyxl.load_workbook(self.workbook_path)
-
-    if grid_worksheet_name in workbook.sheetnames:
-      del workbook[grid_worksheet_name]
-
-    worksheet = workbook.create_sheet(grid_worksheet_name)
-
-    formatter = StyleFormatter()
-    formatter.format(worksheet, grid_data)
-
-    workbook.save(self.workbook_path)
-    workbook.close()
-
-class ThresholdGridGenerator:
-  def __init__(self, workbook_path: str, worksheet_1: str, worksheet_2: str,
-               start_threshold: float, end_threshold: float, grid_worksheet: str):
-    self.workbook_path = workbook_path
-    self.worksheet_1 = worksheet_1
-    self.worksheet_2 = worksheet_2
-    self.start_threshold = start_threshold
-    self.end_threshold = end_threshold
-    self.grid_worksheet = grid_worksheet
-
-  def generate(self) -> None:
-    reader = DataReader(self.workbook_path)
-    data1, data2 = reader.read(self.worksheet_1, self.worksheet_2)
-
-    calculator = GridCalculator()
-    grid_data = calculator.calculate(data1, data2, self.start_threshold,
-                                     self.end_threshold, self.worksheet_1,
-                                     self.worksheet_2)
-
-    writer = WorksheetWriter(self.workbook_path)
-    writer.write(self.grid_worksheet, grid_data)
-
-    print(f"Grid generated successfully in worksheet '{self.grid_worksheet}'")
-    print(f"  Grid size: {len(grid_data.thresholds)}x{len(grid_data.thresholds)}")
-    print(f"  Threshold range: {self.start_threshold} to {self.end_threshold}")
-
-if __name__ == "__main__":
-  generator = ThresholdGridGenerator(
-    workbook_path="j:/projects/sheet-logic/combine-thresholds.xlsx",
-    worksheet_1="cc-threshold-up-to-3",
-    worksheet_2="cc-threshold-above-3",
-    start_threshold=0.01,
-    end_threshold=0.99,
-    grid_worksheet="grid"
-  )
-  generator.generate()
