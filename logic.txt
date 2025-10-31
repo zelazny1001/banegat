@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
 import openpyxl
-from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
 logging.basicConfig(
@@ -26,7 +26,11 @@ class Config:
   OVERVIEW_THRESHOLD = 0.9
 
   FONT_NAME = 'Aptos'
-  FONT_SIZE = 9
+  FONT_SIZE = 10
+
+  # Border style: 'dotted', 'dashed', 'thin', 'medium', 'thick', 'double', 'hair'
+  DETAIL_BORDER_STYLE = 'hair'
+  DETAIL_BORDER_COLOR = '000000'
 
   OVERVIEW_COLUMN_WIDTHS = {
     "Filename": 40,
@@ -269,6 +273,14 @@ class ReportGenerator:
   def create_detail_sheet(self, workbook_data_list: List[ThresholdData]):
     ws = self.wb.create_sheet(Config.OUTPUT_DETAIL)
 
+    # Create border style for headers and cells
+    cell_border = Border(
+      left=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR),
+      right=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR),
+      top=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR),
+      bottom=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR)
+    )
+
     ws.cell(row=1, column=1).value = None
 
     current_col = 2
@@ -287,6 +299,7 @@ class ReportGenerator:
       cell.value = filename_without_ext
       cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE, bold=True)
       cell.alignment = Alignment(horizontal='center', vertical='center')
+      cell.border = cell_border
 
       current_col = end_col + 1
 
@@ -299,6 +312,7 @@ class ReportGenerator:
       cell.value = header
       cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE, bold=True)
       cell.alignment = Alignment(horizontal='center', vertical='center')
+      cell.border = cell_border
 
     ws.column_dimensions['A'].width = Config.DETAIL_COLUMN_WIDTHS["Threshold"]
 
@@ -337,6 +351,7 @@ class ReportGenerator:
           cell = ws.cell(row=row_idx, column=col_idx)
           cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE)
           cell.alignment = Alignment(horizontal='center', vertical='center')
+          cell.border = cell_border
 
           if should_highlight:
             cell.fill = yellow_fill
