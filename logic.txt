@@ -1,12 +1,183 @@
-Given an existing function
-  def load_predictions_txt(path: str, ignore_blanks: bool=false) -> List[Sample]
-  where:
-  Sample = NamedTuple('Sample', [('utterance', str), ('expected', str), ('predicted', str), ('score', float), ('additional_data', Dict[str, Any])])       
-   
-write an equivalent function that gets input data from a worksheet:
-DATA_PREP_WORKSHEET = "data-prep"
+from pathlib import Path
+import csv
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 
-and reads in the rows from the worksheet to process the data.
 
-Basically, skip the header row and process each row from the worksheet just as if it were a line coming in from the file located at"
-path
+class TxtToWorksheetConverter:
+
+    COLUMNS_TO_INCLUDE = [
+        'threshold', 'optimal', 'macro recall', 'macro precision',
+        'macro f1', 'macro f0.5', 'micro recall', 'micro precision',
+        'micro f1', 'micro f0.5', 'TP', 'FN', 'FP', 'TN'
+    ]
+
+    COLUMN_WIDTHS = {
+        'threshold': 10,
+        'optimal': 7,
+        'macro recall': 12,
+        'macro precision': 12,
+        'macro f1': 9,
+        'macro f0.5': 9,
+        'micro recall': 9,
+        'micro precision': 10,
+        'micro f1': 9,
+        'micro f0.5': 9,
+        'TP': 7,
+        'FN': 7,
+        'FP': 7,
+        'TN': 7
+    }
+
+    FLOAT_COLUMNS = {
+        'threshold', 'macro recall', 'macro precision', 'macro f1', 'macro f0.5',
+        'micro recall', 'micro precision', 'micro f1', 'micro f0.5'
+    }
+
+    INTEGER_COLUMNS = {
+        'optimal', 'TP', 'FN', 'FP', 'TN'
+    }
+
+    def txtToWorksheet(self, inputTxtFilepath, outputWorkbookPath, outputWorksheetName="thresholding"):
+        input_path = Path(inputTxtFilepath)
+        output_path = Path(outputWorkbookPath)
+
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {inputTxtFilepath}")
+
+        header, data_rows = self._read_txt_file(input_path)
+        column_indices = self._get_column_indices(header)
+        filtered_header = [header[i] for i in column_indices]
+        filtered_data = [[row[i] for i in column_indices] for row in data_rows]
+
+        workbook = self._load_or_create_workbook(output_path)
+
+        if outputWorksheetName in workbook.sheetnames:
+            del workbook[outputWorksheetName]
+
+        worksheet = workbook.create_sheet(outputWorksheetName)
+
+        self._write_data_to_worksheet(worksheet, filtered_header, filtered_data)
+        self._apply_formatting(worksheet, filtered_header, len(filtered_data))
+
+        workbook.save(output_path)
+
+    def _read_txt_file(self, file_path):
+        with open(file_path, 'r') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+
+        header = [col.strip() for col in rows[0]]
+        data_rows = rows[1:]
+
+        return header, data_rows
+
+    def _get_column_indices(self, header):
+        column_indices = []
+        for col_name in self.COLUMNS_TO_INCLUDE:
+            try:
+                index = header.index(col_name)
+                column_indices.append(index)
+            except ValueError:
+                raise ValueError(f"Required column '{col_name}' not found in input file")
+        return column_indices
+
+    def _load_or_create_workbook(self, output_path):
+        if output_path.exists():
+            return load_workbook(output_path)
+        else:
+            workbook = Workbook()
+            if 'Sheet' in workbook.sheetnames:
+                del workbook['Sheet']
+            return workbook
+
+    def _convert_row_types(self, row, header):
+        converted_row = []
+        for idx, value in enumerate(row):
+            col_name = header[idx]
+
+            if col_name in self.FLOAT_COLUMNS:
+                try:
+                    converted_row.append(float(value))
+                except (ValueError, TypeError):
+                    converted_row.append(value)
+            elif col_name in self.INTEGER_COLUMNS:
+                try:
+                    converted_row.append(int(value))
+                except (ValueError, TypeError):
+                    converted_row.append(value)
+            else:
+                converted_row.append(value)
+
+        return converted_row
+
+    def _write_data_to_worksheet(self, worksheet, header, data_rows):
+        worksheet.append(header)
+
+        for row in data_rows:
+            converted_row = self._convert_row_types(row, header)
+            worksheet.append(converted_row)
+
+    def _apply_formatting(self, worksheet, header, num_data_rows):
+        aptos_font = Font(name='Aptos', size=10)
+        aptos_bold = Font(name='Aptos', size=10, bold=True)
+        yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+
+        for col_idx, col_name in enumerate(header, start=1):
+            cell = worksheet.cell(row=1, column=col_idx)
+            cell.font = aptos_bold
+
+            col_letter = get_column_letter(col_idx)
+            if col_name in self.COLUMN_WIDTHS:
+                worksheet.column_dimensions[col_letter].width = self.COLUMN_WIDTHS[col_name]
+
+        threshold_col_idx = header.index('threshold') + 1 if 'threshold' in header else None
+
+        for row_idx in range(2, num_data_rows + 2):
+            for col_idx in range(1, len(header) + 1):
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                cell.font = aptos_font
+                col_name = header[col_idx - 1]
+
+                if col_name in self.FLOAT_COLUMNS and self._is_float_value(cell.value):
+                    cell.number_format = '0.000'
+
+            if threshold_col_idx:
+                threshold_cell = worksheet.cell(row=row_idx, column=threshold_col_idx)
+                threshold_value = self._parse_float(threshold_cell.value)
+
+                if threshold_value is not None and threshold_value >= 0.8:
+                    for col_idx in range(1, len(header) + 1):
+                        worksheet.cell(row=row_idx, column=col_idx).fill = yellow_fill
+
+        worksheet.freeze_panes = 'A2'
+
+    def _is_float_value(self, value):
+        if isinstance(value, (int, float)):
+            return True
+        if isinstance(value, str):
+            try:
+                float(value)
+                return True
+            except (ValueError, TypeError):
+                return False
+        return False
+
+    def _parse_float(self, value):
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
+
+# ================== usage:
+'''
+    converter = TxtToWorksheetConverter()
+
+    input_txt_file = r"J:\projects\sheet-logic\cortex-thresholding\thresholding-input-data.txt"
+    output_workbook = r"J:\projects\sheet-logic\cortex-thresholding\output_workbook_from_txt.xlsx"
+    worksheet_name = "thresholding"
+
+    converter.txtToWorksheet(input_txt_file, output_workbook, worksheet_name)
+'''
