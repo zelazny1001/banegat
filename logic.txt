@@ -1,0 +1,572 @@
+# threshold_report_aggregator
+
+# threshold_report_aggregator.py
+
+import os
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Optional
+import openpyxl
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+
+logging.basicConfig(
+  level=logging.INFO,
+  format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class Config:
+  REPORTING_ROOT_DIR = "j:/projects/sheet-logic/cortex-thresholding/"
+  REPORTING_INPUT_DIR = REPORTING_ROOT_DIR + "reporting-inputs/"
+  REPORTING_OUTPUT_DIR = REPORTING_ROOT_DIR + "reporting-outputs/"
+  REQUIRED_INPUT_WORKSHEETS = ["data-prep", "thresholding"]
+  OUTPUT_OVERVIEW = "overview"
+  OUTPUT_SUMMARY = "summary"
+  OUTPUT_SUMMARY_HYBRID = "summary-hybrid"
+  OUTPUT_DETAIL = "detail"
+  OVERVIEW_THRESHOLD = 0.9
+  THRESHOLD_ROWS_TO_SUMMARIZE = [0.7, 0.81]
+
+  FONT_NAME = 'Aptos'
+  FONT_SIZE = 10
+
+  DETAIL_BORDER_STYLE = 'hair'
+  DETAIL_BORDER_COLOR = '000000'
+
+  OVERVIEW_COLUMN_WIDTHS = {
+    "Filename": 40,
+    "Threshold": 9,
+    "Precision": 9,
+    "TP": 5,
+    "FN": 5,
+    "FP": 5,
+    "TN": 5,
+    "checksum": 9
+  }
+
+  SUMMARY_COLUMN_WIDTHS = {
+    "Threshold": 10,
+    "workbook": 35
+  }
+
+  SUMMARY_HYBRID_COLUMN_WIDTHS = {
+    "Model": 20,
+    "Conditions": 20,
+    "Threshold": 8,
+    "Precision": 8,
+    "Recall": 8,
+    "TP": 7,
+    "FN": 7,
+    "FP": 7,
+    "TN": 7,
+    "F1": 7,
+    "F0.5": 7,
+    "checksum": 8
+  }
+
+  DETAIL_COLUMN_WIDTHS = {
+    "Threshold": 9,
+    "recall": 9,
+    "precision": 9,
+    "TP": 5,
+    "FN": 5,
+    "FP": 5,
+    "TN": 5
+  }
+
+class ThresholdData:
+  def __init__(self, filename: str):
+    self.filename = filename
+    self.thresholds = []
+    self.micro_recalls = []
+    self.micro_precisions = []
+    self.micro_f1s = []
+    self.micro_f05s = []
+    self.tps = []
+    self.fns = []
+    self.fps = []
+    self.tns = []
+
+  def add_row(self, threshold, micro_recall, micro_precision, micro_f1, micro_f05, tp, fn, fp, tn):
+    self.thresholds.append(threshold)
+    self.micro_recalls.append(micro_recall)
+    self.micro_precisions.append(micro_precision)
+    self.micro_f1s.append(micro_f1)
+    self.micro_f05s.append(micro_f05)
+    self.tps.append(tp)
+    self.fns.append(fn)
+    self.fps.append(fp)
+    self.tns.append(tn)
+
+  def get_data_at_threshold(self, target_threshold: float) -> Optional[Dict]:
+    for i, threshold in enumerate(self.thresholds):
+      if threshold == target_threshold:
+        return {
+          'threshold': threshold,
+          'micro_recall': self.micro_recalls[i],
+          'micro_precision': self.micro_precisions[i],
+          'micro_f1': self.micro_f1s[i],
+          'micro_f05': self.micro_f05s[i],
+          'tp': self.tps[i],
+          'fn': self.fns[i],
+          'fp': self.fps[i],
+          'tn': self.tns[i]
+        }
+    return None
+
+  def parse_filename_components(self) -> tuple:
+    name_without_ext = self.filename.rsplit('.', 1)[0]
+
+    first_dash_idx = name_without_ext.find('-')
+    if first_dash_idx == -1:
+      return name_without_ext, ""
+
+    model = name_without_ext[:first_dash_idx]
+    conditions = name_without_ext[first_dash_idx + 1:]
+
+    return model, conditions
+
+class WorkbookReader:
+  @staticmethod
+  def validate_workbook(filepath: Path) -> bool:
+    try:
+      wb = openpyxl.load_workbook(filepath, read_only=True)
+      sheet_names = wb.sheetnames
+      wb.close()
+
+      for required_sheet in Config.REQUIRED_INPUT_WORKSHEETS:
+        if required_sheet not in sheet_names:
+          logger.warning(
+            f"Workbook {filepath.name} missing required worksheet: {required_sheet}"
+          )
+          return False
+      return True
+    except Exception as e:
+      logger.error(f"Error validating workbook {filepath.name}: {e}")
+      return False
+
+  @staticmethod
+  def read_threshold_data(filepath: Path) -> Optional[ThresholdData]:
+    try:
+      wb = openpyxl.load_workbook(filepath, read_only=True)
+      ws = wb['thresholding']
+
+      headers = [cell.value for cell in ws[1]]
+
+      required_columns = {
+        'threshold': None,
+        'micro recall': None,
+        'micro precision': None,
+        'micro f1': None,
+        'micro f0.5': None,
+        'TP': None,
+        'FN': None,
+        'FP': None,
+        'TN': None
+      }
+
+      for idx, header in enumerate(headers):
+        if header in required_columns:
+          required_columns[header] = idx
+
+      if None in required_columns.values():
+        missing = [k for k, v in required_columns.items() if v is None]
+        logger.error(
+          f"Workbook {filepath.name} missing columns in thresholding sheet: {missing}"
+        )
+        wb.close()
+        return None
+
+      threshold_data = ThresholdData(filepath.name)
+      for row_idx in range(2, ws.max_row + 1):
+        row = list(ws[row_idx])
+        threshold = row[required_columns['threshold']].value
+        micro_recall = row[required_columns['micro recall']].value
+        micro_precision = row[required_columns['micro precision']].value
+        micro_f1 = row[required_columns['micro f1']].value
+        micro_f05 = row[required_columns['micro f0.5']].value
+        tp = row[required_columns['TP']].value
+        fn = row[required_columns['FN']].value
+        fp = row[required_columns['FP']].value
+        tn = row[required_columns['TN']].value
+
+        threshold_data.add_row(
+          threshold, micro_recall, micro_precision, micro_f1, micro_f05, tp, fn, fp, tn
+        )
+
+      wb.close()
+      logger.info(f"Successfully read data from {filepath.name}")
+      return threshold_data
+
+    except Exception as e:
+      logger.error(f"Error reading threshold data from {filepath.name}: {e}")
+      return None
+
+class ReportGenerator:
+  def __init__(self, output_filepath: Path):
+    self.output_filepath = output_filepath
+    self.wb = openpyxl.Workbook()
+    self.wb.remove(self.wb.active)
+
+  def create_overview_sheet(self, workbook_data_list: List[ThresholdData]):
+    ws = self.wb.create_sheet(Config.OUTPUT_OVERVIEW)
+
+    headers = ["Filename", "Threshold", "Precision", "TP", "FN", "FP", "TN", "checksum"]
+    ws.append(headers)
+
+    for col_idx, header in enumerate(headers, start=1):
+      cell = ws.cell(row=1, column=col_idx)
+      cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE, bold=True)
+      cell.alignment = Alignment(horizontal='left', vertical='center')
+
+      col_letter = get_column_letter(col_idx)
+      ws.column_dimensions[col_letter].width = Config.OVERVIEW_COLUMN_WIDTHS.get(
+        header, 10
+      )
+
+    for data in workbook_data_list:
+      threshold_data = data.get_data_at_threshold(Config.OVERVIEW_THRESHOLD)
+      if threshold_data:
+        checksum = (
+            threshold_data['tp'] + threshold_data['fn'] +
+            threshold_data['fp'] + threshold_data['tn']
+        )
+        row = [
+          data.filename,
+          Config.OVERVIEW_THRESHOLD,
+          round(threshold_data['micro_precision'], 3),
+          threshold_data['tp'],
+          threshold_data['fn'],
+          threshold_data['fp'],
+          threshold_data['tn'],
+          checksum
+        ]
+        ws.append(row)
+
+        row_idx = ws.max_row
+        for col_idx in range(1, len(headers) + 1):
+          cell = ws.cell(row=row_idx, column=col_idx)
+          cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE)
+          cell.alignment = Alignment(horizontal='left', vertical='center')
+
+    ws.freeze_panes = 'A2'
+
+    logger.info(f"Created {Config.OUTPUT_OVERVIEW} sheet with {len(workbook_data_list)} rows")
+
+  def create_summary_sheet(self, workbook_data_list: List[ThresholdData]):
+    ws = self.wb.create_sheet(Config.OUTPUT_SUMMARY)
+
+    headers = ["Threshold"]
+    for data in workbook_data_list:
+      filename_without_ext = data.filename.rsplit('.', 1)[0]
+      headers.append(filename_without_ext)
+
+    ws.append(headers)
+
+    ws.cell(row=1, column=1).font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE, bold=True)
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal='center', vertical='center')
+    ws.column_dimensions['A'].width = Config.SUMMARY_COLUMN_WIDTHS["Threshold"]
+
+    for col_idx in range(2, len(headers) + 1):
+      cell = ws.cell(row=1, column=col_idx)
+      cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE, bold=True)
+      cell.alignment = Alignment(horizontal='center', vertical='center')
+      col_letter = get_column_letter(col_idx)
+      ws.column_dimensions[col_letter].width = Config.SUMMARY_COLUMN_WIDTHS["workbook"]
+
+    if workbook_data_list:
+      num_thresholds = len(workbook_data_list[0].thresholds)
+
+      yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+
+      for threshold_idx in range(num_thresholds):
+        row = [workbook_data_list[0].thresholds[threshold_idx]]
+
+        for data in workbook_data_list:
+          row.append(round(data.micro_precisions[threshold_idx], 3))
+
+        ws.append(row)
+
+        row_idx = ws.max_row
+        threshold_value = row[0]
+        should_highlight = 0.8 <= threshold_value <= 0.97
+
+        for col_idx in range(1, len(row) + 1):
+          cell = ws.cell(row=row_idx, column=col_idx)
+          cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE)
+          cell.alignment = Alignment(horizontal='center', vertical='center')
+
+          if should_highlight:
+            cell.fill = yellow_fill
+
+    for row_idx in range(2, ws.max_row + 1):
+      threshold = ws.cell(row=row_idx, column=1).value
+      if threshold is not None and 0 <= threshold <= 0.79:
+        ws.row_dimensions[row_idx].hidden = True
+
+    ws.freeze_panes = 'A2'
+
+    logger.info(f"Created {Config.OUTPUT_SUMMARY} sheet")
+
+  def create_summary_hybrid_sheet(self, workbook_data_list: List[ThresholdData]):
+    if Config.OUTPUT_SUMMARY_HYBRID in self.wb.sheetnames:
+      del self.wb[Config.OUTPUT_SUMMARY_HYBRID]
+
+    ws = self.wb.create_sheet(Config.OUTPUT_SUMMARY_HYBRID)
+
+    headers = ["Model", "Conditions", "Threshold", "Precision", "Recall",
+               "TP", "FN", "FP", "TN", "F1", "F0.5", "checksum"]
+    ws.append(headers)
+
+    for col_idx, header in enumerate(headers, start=1):
+      cell = ws.cell(row=1, column=col_idx)
+      cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE, bold=True)
+      cell.alignment = Alignment(horizontal='left', vertical='center')
+
+      col_letter = get_column_letter(col_idx)
+      ws.column_dimensions[col_letter].width = Config.SUMMARY_HYBRID_COLUMN_WIDTHS.get(
+        header, 10
+      )
+
+    data_cell_border = Border(
+      left=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR),
+      right=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR),
+      top=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR),
+      bottom=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR)
+    )
+
+    data_cell_fill = PatternFill(start_color='ACCBE7', end_color='ACCBE7', fill_type='solid')
+
+    for data_idx, data in enumerate(workbook_data_list):
+      model, conditions = data.parse_filename_components()
+
+      model_row = [model, conditions] + [None] * 10
+      ws.append(model_row)
+      model_row_idx = ws.max_row
+
+      ws.cell(row=model_row_idx, column=1).font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE)
+      ws.cell(row=model_row_idx, column=1).alignment = Alignment(horizontal='left', vertical='center')
+      ws.cell(row=model_row_idx, column=2).font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE)
+      ws.cell(row=model_row_idx, column=2).alignment = Alignment(horizontal='left', vertical='center')
+
+      for target_threshold in Config.THRESHOLD_ROWS_TO_SUMMARIZE:
+        threshold_data = data.get_data_at_threshold(target_threshold)
+
+        if threshold_data:
+          checksum = (
+              threshold_data['tp'] + threshold_data['fn'] +
+              threshold_data['fp'] + threshold_data['tn']
+          )
+
+          row = [
+            None,
+            None,
+            target_threshold,
+            round(threshold_data['micro_precision'], 3),
+            round(threshold_data['micro_recall'], 3),
+            threshold_data['tp'],
+            threshold_data['fn'],
+            threshold_data['fp'],
+            threshold_data['tn'],
+            round(threshold_data['micro_f1'], 3),
+            round(threshold_data['micro_f05'], 3),
+            checksum
+          ]
+
+          ws.append(row)
+          row_idx = ws.max_row
+
+          for col_idx in range(3, len(headers) + 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE)
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = data_cell_border
+            cell.fill = data_cell_fill
+
+      blank_row = [None] * len(headers)
+      ws.append(blank_row)
+
+    logger.info(f"Created {Config.OUTPUT_SUMMARY_HYBRID} sheet with {len(workbook_data_list)} workbooks")
+
+  def create_detail_sheet(self, workbook_data_list: List[ThresholdData]):
+    ws = self.wb.create_sheet(Config.OUTPUT_DETAIL)
+
+    cell_border = Border(
+      left=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR),
+      right=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR),
+      top=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR),
+      bottom=Side(style=Config.DETAIL_BORDER_STYLE, color=Config.DETAIL_BORDER_COLOR)
+    )
+
+    ws.cell(row=1, column=1).value = None
+
+    current_col = 2
+    for data in workbook_data_list:
+      filename_without_ext = data.filename.rsplit('.', 1)[0]
+
+      start_col = current_col
+      end_col = current_col + 5
+
+      ws.merge_cells(
+        start_row=1, start_column=start_col,
+        end_row=1, end_column=end_col
+      )
+
+      cell = ws.cell(row=1, column=start_col)
+      cell.value = filename_without_ext
+      cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE, bold=True)
+      cell.alignment = Alignment(horizontal='center', vertical='center')
+      cell.border = cell_border
+
+      current_col = end_col + 1
+
+    headers_row2 = ["Threshold"]
+    for _ in workbook_data_list:
+      headers_row2.extend(["recall", "precision", "TP", "FN", "FP", "TN"])
+
+    for col_idx, header in enumerate(headers_row2, start=1):
+      cell = ws.cell(row=2, column=col_idx)
+      cell.value = header
+      cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE, bold=True)
+      cell.alignment = Alignment(horizontal='center', vertical='center')
+      cell.border = cell_border
+
+    ws.column_dimensions['A'].width = Config.DETAIL_COLUMN_WIDTHS["Threshold"]
+
+    col_idx = 2
+    for _ in workbook_data_list:
+      for metric in ["recall", "precision", "TP", "FN", "FP", "TN"]:
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = Config.DETAIL_COLUMN_WIDTHS[metric]
+        col_idx += 1
+
+    if workbook_data_list:
+      num_thresholds = len(workbook_data_list[0].thresholds)
+
+      yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+
+      for threshold_idx in range(num_thresholds):
+        row = [workbook_data_list[0].thresholds[threshold_idx]]
+
+        for data in workbook_data_list:
+          row.extend([
+            round(data.micro_recalls[threshold_idx], 3),
+            round(data.micro_precisions[threshold_idx], 3),
+            data.tps[threshold_idx],
+            data.fns[threshold_idx],
+            data.fps[threshold_idx],
+            data.tns[threshold_idx]
+          ])
+
+        ws.append(row)
+
+        row_idx = ws.max_row
+        threshold_value = row[0]
+        should_highlight = 0.8 <= threshold_value <= 0.97
+
+        for col_idx in range(1, len(row) + 1):
+          cell = ws.cell(row=row_idx, column=col_idx)
+          cell.font = Font(name=Config.FONT_NAME, size=Config.FONT_SIZE)
+          cell.alignment = Alignment(horizontal='center', vertical='center')
+          cell.border = cell_border
+
+          if should_highlight:
+            cell.fill = yellow_fill
+
+    for row_idx in range(3, ws.max_row + 1):
+      threshold = ws.cell(row=row_idx, column=1).value
+      if threshold is not None and 0 <= threshold <= 0.79:
+        ws.row_dimensions[row_idx].hidden = True
+
+    ws.freeze_panes = 'A3'
+
+    logger.info(f"Created {Config.OUTPUT_DETAIL} sheet")
+
+  def save(self):
+    self.wb.save(self.output_filepath)
+    logger.info(f"Saved report to {self.output_filepath}")
+
+class ThresholdReportAggregator:
+  def __init__(self):
+    self.config = Config()
+    self.reader = WorkbookReader()
+
+  def get_output_filename(self) -> str:
+    now = datetime.now()
+    return f"{now.strftime('%Y-%m-%d-%H-%M')}-threshold-report.xlsx"
+
+  def check_and_prepare_output_path(self) -> Path:
+    output_dir = Path(self.config.REPORTING_OUTPUT_DIR)
+    if not output_dir.exists():
+      logger.error(f"Output directory does not exist: {output_dir}")
+      raise FileNotFoundError(f"Output directory not found: {output_dir}")
+
+    output_filename = self.get_output_filename()
+    output_path = output_dir / output_filename
+
+    now = datetime.now()
+    hour_pattern = now.strftime('%Y-%m-%d-%H-')
+
+    for existing_file in output_dir.glob(f"{hour_pattern}*-threshold-report.xlsx"):
+      if existing_file != output_path:
+        logger.info(f"Removing existing report from this hour: {existing_file.name}")
+        existing_file.unlink()
+
+    return output_path
+
+  def find_valid_workbooks(self) -> List[Path]:
+    input_dir = Path(self.config.REPORTING_INPUT_DIR)
+
+    if not input_dir.exists():
+      logger.error(f"Input directory does not exist: {input_dir}")
+      raise FileNotFoundError(f"Input directory not found: {input_dir}")
+
+    xlsx_files = list(input_dir.glob("*.xlsx"))
+    logger.info(f"Found {len(xlsx_files)} Excel files in input directory")
+
+    valid_workbooks = []
+    for filepath in xlsx_files:
+      if self.reader.validate_workbook(filepath):
+        valid_workbooks.append(filepath)
+
+    logger.info(f"Found {len(valid_workbooks)} valid workbooks")
+    return valid_workbooks
+
+  def generate_report(self):
+    logger.info("Starting threshold report aggregation")
+
+    valid_workbooks = self.find_valid_workbooks()
+
+    if not valid_workbooks:
+      logger.warning("No valid workbooks found. Exiting without creating output.")
+      return
+
+    workbook_data_list = []
+    for filepath in valid_workbooks:
+      data = self.reader.read_threshold_data(filepath)
+      if data:
+        workbook_data_list.append(data)
+
+    if not workbook_data_list:
+      logger.warning("No data extracted from workbooks. Exiting without creating output.")
+      return
+
+    output_path = self.check_and_prepare_output_path()
+
+    generator = ReportGenerator(output_path)
+    generator.create_overview_sheet(workbook_data_list)
+    generator.create_summary_sheet(workbook_data_list)
+    generator.create_summary_hybrid_sheet(workbook_data_list)
+    generator.create_detail_sheet(workbook_data_list)
+    generator.save()
+
+    logger.info("Threshold report aggregation completed successfully")
+
+def main():
+  aggregator = ThresholdReportAggregator()
+  aggregator.generate_report()
+
+if __name__ == "__main__":
+  main()
