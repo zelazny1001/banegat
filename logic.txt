@@ -1,4 +1,6 @@
 =IF(AND(I2="Good",K2="CDP"),"CDP",
 IF(AND(I2="Bad",K2="CDP"),"CONTACT_CENTER_OTHER",
+IF(AND(I2="Good",K2=""),"CONTACT_CENTER_OTHER",
+IF(AND(I2="Bad",K2=""),"CDP",
 IF(AND(I2="Good",K2<>"CDP"),K2,
-IF(AND(I2="Bad",K2<>"CDP"),"CDP",""))))
+IF(AND(I2="Bad",K2<>"CDP"),"CDP",""))))))
