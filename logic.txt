@@ -1,0 +1,35 @@
+Example 1
+
+───────────────────────────────────────────────────────────────────────────
+PHASE 3: Payment Confirmation via Webhook (SOURCE OF TRUTH)
+───────────────────────────────────────────────────────────────────────────
+
+Stripe ────POST /webhook────▶ FastAPI
+       checkout.session         │
+         .completed             │ Verify webhook signature
+                                ▼
+                            Stripe API
+                                │ Retrieve full session
+                                │ + payment_intent (expanded)
+                                ▼
+
+
+Example 2
+
+┌─────────────────────────────────────────────────────────────────┐
+│                   User calls method                             │
+│  get_top_all_negative(top_n=N, sort_by='avg_diff')              │
+│         OR                                                      │
+│  get_top_majority_negative(top_n=N, sort_by='avg_diff')         │
+└───────────────────────┬─────────────────────────────────────────┘
+                        │
+                        ▼
+           ┌────────────────────────┐
+           │ Check if summary built │
+           │ If not: build it       │
+           └────────┬───────────────┘
+                    │
+                    ▼
+        ┌───────────────────────────────┐
+        │ Initialize empty results list │
+        └───────────┬───────────────────┘
