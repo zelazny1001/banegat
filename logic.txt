@@ -42,3 +42,341 @@ Test frequently during generation rather than fixing afterward
 
 This approach eliminates ragged edges and alignment issues from the start rather than requiring post-processing fixes.
 IMPORTANT: Following the strategy correctly requires using a script to count characters and ensure every single line has exactly the same length before finalizing the diagram.
+
+
+ASCII/Unicode Diagram Drawing Instructions
+Character Counting is Critical: Count EVERY character including borders, text, and spaces. Total width must equal: left border + content + right border.
+Text Centering Formula:
+Total box width = N characters
+Border characters = 2 (│ or similar)
+Content space = N - 2
+Text length = L characters
+Left padding = floor((Content space - L) / 2)
+Right padding = ceil((Content space - L) / 2)
+Result: │ + left_padding_spaces + text + right_padding_spaces + │
+Box Width Consistency: All boxes at the same hierarchical level must have identical widths. Connectors (┬, ┴) must be centered exactly within their boxes.
+Step 1 - Analyze Structure: Identify hierarchy levels, determine maximum text width per level, and plan connector placement.
+Step 2 - Calculate Dimensions: For each box: width = max(text length at that level) + (padding × 2) + 2 borders. Center connectors at position = floor(width / 2).
+Step 3 - Draw with Precision: Start with top box to establish width baseline. Draw vertical connections with consistent spacing. Verify every line has exact character count.
+Step 4 - Quality Checklist:
+All same-level boxes have identical width
+All text is centered using the formula (not visual estimation)
+All connectors (┬, ┴, ┼) are centered in their boxes
+All right borders form straight vertical lines
+No "off-by-one" errors in character counts
+Parentheses and annotations align with their arrows
+Common Width Calculation: Minimum box width = text length + 4 (for 1-space padding each side). Standard padding is 1-2 spaces each side for readability.
+Right Border Verification: After drawing, check that all right border characters (│, ┐, ┘, ╮, ╯) align in the same vertical column.
+Final Validation: Before presenting, manually count characters in key lines and verify the centering formula was applied to every text box.
+
+╭──────────────────────────────╮
+│       Start MLflow Run       │
+╰──────────────┬───────────────╯
+               │
+               ▼
+      ╭─────────────────╮
+      │  Get Run ID and │
+      │  Append to Name │
+      ╰────────┬────────╯
+               │
+               ▼
+      ╭─────────────────╮
+      │ Log Parameters  │
+      │ and Set Tags    │
+      ╰────────┬────────╯
+               │
+               ▼
+      ╭─────────────────╮
+      │ Train Model and │
+      │ Log Metrics     │
+      ╰────────┬────────╯
+               │
+               ▼
+      ╭─────────────────╮
+      │   Save Model    │
+      │   Artifacts     │
+      ╰────────┬────────╯
+               │
+               ▼
+      ╭─────────────────╮
+      │     End Run     │
+      ╰─────────────────╯
+
+
+
+╭──────────────────────╮
+│   Jupyter Notebook   │
+╰──────────┬───────────╯
+           │
+           │ (Logs runs, metrics, etc.)
+           ▼
+╭──────────┴──────────╮
+│      Tracking       │  ← Main interaction for logging
+╰──────────┬──────────╯
+           │
+           │ (Optional: package experiments)
+           ▼
+╭──────────┴──────────╮
+│      Projects       │
+╰──────────┬──────────╯
+           │
+           │ (Save, load, deploy models)
+           ▼
+╭──────────┴──────────╮
+│       Models        │
+╰─────────────────────╯
+
+"Tight" ascii drawing example: #not provided
+
+#====================================== csv viewer ==================================
+
+# csv_to_table.py
+
+import yaml
+import pandas as pd
+import sys
+import curses
+from tabulate import tabulate
+from pathlib import Path
+
+class CsvViewerConfig:
+  def __init__(self, path):
+    with open(path, "r", encoding="utf-8") as f:
+      data = yaml.safe_load(f)
+
+    self.csv_file = Path(data["csv_file"])
+    self.start_row = data.get("start_row", 0)
+    self.end_row = data.get("end_row")
+    self.columns_to_show = data.get("columns_to_show", "all")
+    self.pretty = data.get("pretty_table_output", False)
+    self.paging = data.get("enable_paging_with_arrows", False)
+    self.page_size = data.get("page_size", 20)
+    self.freeze_header_row = data.get("freeze_header_row", False)
+    self.hscroll = data.get("enable_horizontal_scrolling", False)
+    self.hstep = data.get("horizontal_scroll_step", 5)
+    self.enable_fallback_pager = data.get("enable_fallback_pager", False)
+    self.fallback_page_size = data.get("fallback_page_size", 20)
+    self.fallback_horizontal_step = data.get("fallback_horizontal_step", 20)
+
+    nav = data.get("navigation_keys", {})
+    self.nav = {
+      "left": nav.get("left", "l"),
+      "right": nav.get("right", "r"),
+      "up": nav.get("up", "k"),
+      "down": nav.get("down", "j"),
+      "next": nav.get("next", "n"),
+      "previous": nav.get("previous", "p"),
+    }
+
+class KeyLegend:
+  LABELS = {
+    "left": "left",
+    "right": "right",
+    "up": "up",
+    "down": "down",
+    "next": "next page",
+    "previous": "prev page",
+  }
+
+  @staticmethod
+  def build(nav):
+    parts = []
+    for action, label in KeyLegend.LABELS.items():
+      key = nav.get(action)
+      if key:
+        parts.append(f"{key} {label}")
+    parts.append("q quit")
+    return " | ".join(parts)
+
+class CsvDataSource:
+    def __init__(self, config):
+        df = pd.read_csv(config.csv_file, dtype=str)
+        if config.columns_to_show != "all":
+            df = df[config.columns_to_show]
+        if config.end_row is not None:
+            df = df.iloc[config.start_row:config.end_row]
+        else:
+            df = df.iloc[config.start_row:]
+        self.df = df.reset_index(drop=True)
+
+class PagingRenderer:
+  def __init__(self, df, config):
+    self.df = df
+    self.cfg = config
+    self.page = 0
+    self.col_offset = 0
+
+  def run(self):
+    curses.wrapper(self._loop)
+
+  def _format(self, df):
+    if self.cfg.pretty:
+      return tabulate(df, headers="keys", tablefmt="plain", showindex=False)
+    return df.to_string(index=False)
+
+  def _slice_lines(self, text, width):
+    lines = []
+    for line in text.splitlines():
+      lines.append(line[self.col_offset:self.col_offset + width])
+    return lines
+
+  def _loop(self, stdscr):
+    curses.curs_set(0)
+    headers = self.df.iloc[:0]
+    header_lines = self._slice_lines(self._format(headers), curses.COLS - 1)
+
+    while True:
+      stdscr.clear()
+      max_y, max_x = stdscr.getmaxyx()
+      start = self.page * self.cfg.page_size
+      end = start + self.cfg.page_size
+      body = self.df.iloc[start:end]
+
+      if self.cfg.freeze_header_row:
+        for i, line in enumerate(header_lines[:1]):
+          stdscr.addstr(i, 0, line)
+        y_offset = 1
+      else:
+        y_offset = 0
+
+      body_text = self._slice_lines(
+        self._format(body),
+        max_x - 1
+      )
+
+      for i, line in enumerate(body_text[: max_y - y_offset - 2]):
+        stdscr.addstr(i + y_offset, 0, line)
+
+      legend = KeyLegend.build(self.cfg.nav)
+      stdscr.addstr(max_y - 1, 0, legend[: max_x - 1])
+
+      key = stdscr.getch()
+      if key == ord("q"):
+        break
+
+      ch = chr(key) if 0 <= key < 256 else None
+      nav = self.cfg.nav
+
+      if ch == nav["down"] and end < len(self.df):
+          self.page += 1
+      if ch == nav["up"] and self.page > 0:
+          self.page -= 1
+      if ch == nav["right"]:
+          self.col_offset += self.cfg.hstep
+      if ch == nav["left"]:
+          self.col_offset = max(0, self.col_offset - self.cfg.hstep)
+
+      if key == curses.KEY_DOWN and end < len(self.df):
+        self.page += 1
+      if key == curses.KEY_UP and self.page > 0:
+        self.page -= 1
+      if key == curses.KEY_RIGHT:
+        self.col_offset += self.cfg.hstep
+      if key == curses.KEY_LEFT:
+        self.col_offset = max(0, self.col_offset - self.cfg.hstep)
+
+class StaticRenderer:
+    def __init__(self, df, pretty):
+        self.df = df
+        self.pretty = pretty
+
+    def render(self):
+        if self.pretty:
+            print(tabulate(self.df, headers="keys", tablefmt="github", showindex=False))
+        else:
+            pd.set_option("display.max_columns", None)
+            pd.set_option("display.width", None)
+            print(self.df)
+
+class FallbackPager:
+  def __init__(self, df, config):
+    self.df = df.reset_index(drop=True)
+    self.cfg = config
+    self.page = 0
+    self.col_offset = 0
+
+  def _render(self, chunk):
+    if self.cfg.pretty:
+      text = tabulate(chunk, headers="keys", tablefmt="github", showindex=False)
+    else:
+      text = chunk.to_string(index=False)
+    lines = []
+    for line in text.splitlines():
+      lines.append(line[self.col_offset:])
+    return "\n".join(lines)
+
+  def run(self):
+    total_pages = (len(self.df) - 1) // self.cfg.fallback_page_size + 1
+    nav = self.cfg.nav
+
+    while True:
+      start = self.page * self.cfg.fallback_page_size
+      end = start + self.cfg.fallback_page_size
+      chunk = self.df.iloc[start:end]
+
+      print("\n" * 2)
+      print(self._render(chunk))
+      print()
+      legend = KeyLegend.build(self.cfg.nav)
+      print(f"page {self.page + 1}/{total_pages} | {legend}")
+
+      cmd = input("> ").strip().lower()
+
+      if cmd == "q":
+        break
+      if cmd == nav["next"] and end < len(self.df):
+        self.page += 1
+      if cmd == nav["previous"] and self.page > 0:
+        self.page -= 1
+      if cmd == nav["left"]:
+        self.col_offset = max(0, self.col_offset - self.cfg.fallback_horizontal_step)
+      if cmd == nav["right"]:
+        self.col_offset += self.cfg.fallback_horizontal_step
+
+class Application:
+    def __init__(self, config_path):
+        self.config = CsvViewerConfig(config_path)
+        self.data = CsvDataSource(self.config)
+
+    def is_real_tty(self):
+      return sys.stdin.isatty() and sys.stdout.isatty()
+
+    def run(self):
+      if self.config.paging and self.is_real_tty():
+        PagingRenderer(self.data.df, self.config).run()
+      elif self.config.enable_fallback_pager:
+        FallbackPager(self.data.df, self.config).run()
+      else:
+        StaticRenderer(self.data.df, self.config.pretty).render()
+
+if __name__ == "__main__":
+    Application("csv_viewer.yaml").run()
+	
+# ======================= YAML csv_viewer.yaml ====================
+
+csv_file: c:/testing.csv
+
+columns_to_show: all
+start_row: 0
+end_row: 200
+freeze_header_row: true
+
+pretty_table_output: true
+
+enable_paging_with_arrows: true
+page_size: 15
+
+enable_horizontal_scrolling: true
+horizontal_scroll_step: 5
+
+navigation_keys:
+  left:  a
+  right: ;
+  up:    u
+  down:  j
+  next:  n
+  previous: p
+
+enable_fallback_pager: true
+fallback_page_size: 20
+fallback_horizontal_step: 20
