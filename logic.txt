@@ -128,6 +128,12 @@ Final Validation: Before presenting, manually count characters in key lines and 
 
 "Tight" ascii drawing example: #not provided
 
+
+======================================= ml flow =====================================
+"overview architecture" https://mlflow.org/classical-ml#get-started
+"common setups" https://mlflow.org/docs/latest/self-hosting/architecture/overview/
+
+
 #====================================== csv viewer ==================================
 
 # csv_to_table.py
