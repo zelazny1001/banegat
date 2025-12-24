@@ -104,29 +104,29 @@ Final Validation: Before presenting, manually count characters in key lines and 
 
 
 
-╭──────────────────────╮
-│   Jupyter Notebook   │
-╰──────────┬───────────╯
-           │
-           │ (Logs runs, metrics, etc.)
-           ▼
-╭──────────┴──────────╮
-│      Tracking       │  ← Main interaction for logging
-╰──────────┬──────────╯
-           │
-           │ (Optional: package experiments)
-           ▼
-╭──────────┴──────────╮
-│      Projects       │
-╰──────────┬──────────╯
-           │
-           │ (Save, load, deploy models)
-           ▼
-╭──────────┴──────────╮
-│       Models        │
-╰─────────────────────╯
+	╭──────────────────────╮
+	│   Jupyter Notebook   │
+	╰──────────┬───────────╯
+			   │
+			   │ (Logs runs, metrics, etc.)
+			   ▼
+	╭──────────┴──────────╮
+	│      Tracking       │  ← Main interaction for logging
+	╰──────────┬──────────╯
+			   │
+			   │ (Optional: package experiments)
+			   ▼
+	╭──────────┴──────────╮
+	│      Projects       │
+	╰──────────┬──────────╯
+			   │
+			   │ (Save, load, deploy models)
+			   ▼
+	╭──────────┴──────────╮
+	│       Models        │
+	╰─────────────────────╯
 
-"Tight" ascii drawing example: #not provided
+"Tight" ascii drawing example: #include from prior work
 
 
 ======================================= ml flow =====================================
