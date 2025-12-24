@@ -1,6 +1,8 @@
-When creating text diagrams:
+When creating ascii text diagrams:
 - Use box-drawing characters (─, │, ▼, ▶, ◀) for connectors
-- Keep it readable in monospace without any special rendering
+- Keep it readable using unicode fonts preferably monospaced ones
+- use these characters for box horizontal and verticals ( ─, │ )
+- use these characters for box corners ( ╭ ,  ╮ , ╰ ,  ╯ )
 
 Critical: Ensure vertical connectors align exactly (same column position for ┬, │, and ▼)
 Position arrows on the connecting lines.
@@ -24,16 +26,13 @@ Pad all content lines to match the box width precisely
 
 Phase 3: Draw the links
 
-Add connecting lines between boxes
-Use consistent box-drawing characters (│, ─, ┌, └, ┬, etc.)
-Maintain alignment with box edges
+Add connecting lines between boxes where required
 
 Phase 4: Place the arrows
 
 Add directional indicators (▼, ►, ◄, ▲)
 
-Also note the following points when creating simplified text flow :
-
+Also note the following general points when creating ascii diagrams :
 1. For nested boxes: Calculate inner box width first, then outer box accommodates with padding
 Always verify line lengths programmatically (every line in a box must be identical length)
 Connector alignment: The ┬ junction, vertical │ line, and ▼ arrow must all be at the same column position
@@ -43,12 +42,11 @@ Test frequently during generation rather than fixing afterward
 This approach eliminates ragged edges and alignment issues from the start rather than requiring post-processing fixes.
 IMPORTANT: Following the strategy correctly requires using a script to count characters and ensure every single line has exactly the same length before finalizing the diagram.
 
-
 ASCII/Unicode Diagram Drawing Instructions
 Character Counting is Critical: Count EVERY character including borders, text, and spaces. Total width must equal: left border + content + right border.
 Text Centering Formula:
 Total box width = N characters
-Border characters = 2 (│ or similar)
+Border characters = 2 (│ , ╮ , ╭ , ╯ , ╰ , or similar)
 Content space = N - 2
 Text length = L characters
 Left padding = floor((Content space - L) / 2)
@@ -61,7 +59,8 @@ Step 3 - Draw with Precision: Start with top box to establish width baseline. Dr
 Step 4 - Quality Checklist:
 All same-level boxes have identical width
 All text is centered using the formula (not visual estimation)
-All connectors (┬, ┴, ┼) are centered in their boxes
+Text cannot cause right side vertical line segment misalignment (by "pushing out" the right side vertical line segments)
+Connectors (┬, ┴, ┼) are centered in their boxes when there is only one connection to the box
 All right borders form straight vertical lines
 No "off-by-one" errors in character counts
 Parentheses and annotations align with their arrows
@@ -69,38 +68,45 @@ Common Width Calculation: Minimum box width = text length + 4 (for 1-space paddi
 Right Border Verification: After drawing, check that all right border characters (│, ┐, ┘, ╮, ╯) align in the same vertical column.
 Final Validation: Before presenting, manually count characters in key lines and verify the centering formula was applied to every text box.
 
-╭──────────────────────────────╮
-│       Start MLflow Run       │
-╰──────────────┬───────────────╯
-               │
-               ▼
-      ╭─────────────────╮
-      │  Get Run ID and │
-      │  Append to Name │
-      ╰────────┬────────╯
-               │
-               ▼
-      ╭─────────────────╮
-      │ Log Parameters  │
-      │ and Set Tags    │
-      ╰────────┬────────╯
-               │
-               ▼
-      ╭─────────────────╮
-      │ Train Model and │
-      │ Log Metrics     │
-      ╰────────┬────────╯
-               │
-               ▼
-      ╭─────────────────╮
-      │   Save Model    │
-      │   Artifacts     │
-      ╰────────┬────────╯
-               │
-               ▼
-      ╭─────────────────╮
-      │     End Run     │
-      ╰─────────────────╯
+IMPORTANT: preserve the script that was used to generate the diagram as "ascii_lineart.py" so that any issues can be addressed by comparing the generated
+diagram with the script and making the required modifications to the script.
+Write the script in an object-oriented way making full use of classes and methods
+Include a yaml configuration for the script so that the diagram corner symbols, fonts, amount of white space at the left of the diagram (like a left margin of white space)
+and any other relevant elements of style for the diagram
+Have a "main" orchestrator that can be triggered from PyCharm IDE or command line to run the script
+
+	╭──────────────────────────────╮
+	│       Start MLflow Run       │
+	╰──────────────┬───────────────╯
+				   │
+				   ▼
+		  ╭─────────────────╮
+		  │  Get Run ID and │
+		  │  Append to Name │
+		  ╰────────┬────────╯
+				   │
+				   ▼
+		  ╭─────────────────╮
+		  │ Log Parameters  │
+		  │ and Set Tags    │
+		  ╰────────┬────────╯
+				   │
+				   ▼
+		  ╭─────────────────╮
+		  │ Train Model and │
+		  │ Log Metrics     │
+		  ╰────────┬────────╯
+				   │
+				   ▼
+		  ╭─────────────────╮
+		  │   Save Model    │
+		  │   Artifacts     │
+		  ╰────────┬────────╯
+				   │
+				   ▼
+		  ╭─────────────────╮
+		  │     End Run     │
+		  ╰─────────────────╯
 
 
 
@@ -128,12 +134,13 @@ Final Validation: Before presenting, manually count characters in key lines and 
 
 "Tight" ascii drawing example: #include from prior work
 
+Also show example(s) of open-box styles
+
+Given a machine learning model, generate the ascii_lineart script for displaying it.
 
 ======================================= ml flow =====================================
 "overview architecture" https://mlflow.org/classical-ml#get-started
 "common setups" https://mlflow.org/docs/latest/self-hosting/architecture/overview/
-
-
 #====================================== csv viewer ==================================
 
 # csv_to_table.py
