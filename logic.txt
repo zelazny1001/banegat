@@ -1,11 +1,9 @@
 When creating ascii text diagrams:
-- Use box-drawing characters (─, │, ▼, ▶, ◀) for connectors
-- Keep it readable using unicode fonts preferably monospaced ones
+- Use these characters (─, ┬, │, ▼, ▶, ◀) for connectors
 - use these characters for box horizontal and verticals ( ─, │ )
 - use these characters for box corners ( ╭ ,  ╮ , ╰ ,  ╯ )
-
-Critical: Ensure vertical connectors align exactly (same column position for ┬, │, and ▼)
-Position arrows on the connecting lines.
+- Ensure vertical connectors align exactly (same column position for ┬, │, and ▼)
+- Keep diagram text readable using unicode fonts preferably monospaced ones
 
 The following strategy works well to eliminate ragged lines and other issues when drawing text flow diagrams:
 
@@ -14,33 +12,29 @@ Four-Phase Process:
 Phase 1: Generate all text content first
 
 Write all labels, descriptions, and content
-Determine the longest line to establish box width
 No formatting yet - just pure content
 
 Phase 2: Enclose text in boxes
 
 Calculate exact box dimensions
-Create boxes with consistent widths
-Critical: Ensure every line within a box is exactly the same character length
-Pad all content lines to match the box width precisely
+Determine box dimensions by using the length of the text to be enclosed by the box and the height (number of vertical lines occupied) of the text
+Pad all content lines to match the box width and height so that the text is fully contained within the box and the edge segments are lined up precisely
 
 Phase 3: Draw the links
-
 Add connecting lines between boxes where required
 
 Phase 4: Place the arrows
-
 Add directional indicators (▼, ►, ◄, ▲)
 
 Also note the following general points when creating ascii diagrams :
 1. For nested boxes: Calculate inner box width first, then outer box accommodates with padding
-Always verify line lengths programmatically (every line in a box must be identical length)
-Connector alignment: The ┬ junction, vertical │ line, and ▼ arrow must all be at the same column position
-Use a script to count characters in each line and verify they match before finalizing
+2. Always verify line lengths programmatically
+3. Connector alignment: The ┬ junction, vertical │ line, and ▼ arrow must all be at the same column position
+4. Use a script to count characters in each line and verify they match before finalizing
 Test frequently during generation rather than fixing afterward
 
-This approach eliminates ragged edges and alignment issues from the start rather than requiring post-processing fixes.
-IMPORTANT: Following the strategy correctly requires using a script to count characters and ensure every single line has exactly the same length before finalizing the diagram.
+This approach helps to eliminate ragged edges and alignment issues from the start rather than requiring multiple post-processing iterations to fix.
+Following the strategy correctly requires using a script to carry out all these actions.
 
 ASCII/Unicode Diagram Drawing Instructions
 Character Counting is Critical: Count EVERY character including borders, text, and spaces. Total width must equal: left border + content + right border.
@@ -52,7 +46,7 @@ Text length = L characters
 Left padding = floor((Content space - L) / 2)
 Right padding = ceil((Content space - L) / 2)
 Result: │ + left_padding_spaces + text + right_padding_spaces + │
-Box Width Consistency: All boxes at the same hierarchical level must have identical widths. Connectors (┬, ┴) must be centered exactly within their boxes.
+Box Width single connector centering: Connectors (┬, ┴) must be centered exactly within their boxes.
 Step 1 - Analyze Structure: Identify hierarchy levels, determine maximum text width per level, and plan connector placement.
 Step 2 - Calculate Dimensions: For each box: width = max(text length at that level) + (padding × 2) + 2 borders. Center connectors at position = floor(width / 2).
 Step 3 - Draw with Precision: Start with top box to establish width baseline. Draw vertical connections with consistent spacing. Verify every line has exact character count.
@@ -73,7 +67,7 @@ diagram with the script and making the required modifications to the script.
 Write the script in an object-oriented way making full use of classes and methods
 Include a yaml configuration for the script so that the diagram corner symbols, fonts, amount of white space at the left of the diagram (like a left margin of white space)
 and any other relevant elements of style for the diagram
-Have a "main" orchestrator that can be triggered from PyCharm IDE or command line to run the script
+Have a "main" orchestrator that can be triggered from PyCharm IDE or command line to run the script to reproduce the diagram
 
 	╭──────────────────────────────╮
 	│       Start MLflow Run       │
