@@ -106,3 +106,26 @@ def get_jiwer_result(gt: str, hyp: str) -> dict:
         "hypothesis": len(hyp_tokens),
         "alignment": aligned_output
     }
+	
+	#============
+	
+# config.yaml
+input_directory: "."
+input_filename: "compare-envs-input.xlsx"
+output_directory: "."
+output_filename: "compare-envs-output.xlsx"
+column_widths:
+  index: 5
+  session_id: 14
+  Triton_SeqNum: 7
+  Triton_SeqNumRange: 9
+  Triton_Speaker: 7
+  Triton_Transcript: 40
+  Vllm_SeqNum: 7
+  Vllm_SeqNumRange: 9
+  Vllm_Speaker: 7
+  Vllm_Transcript: 40
+  Delta: 6
+  S: 5
+  D: 5
+  I: 5
