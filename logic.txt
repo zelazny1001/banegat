@@ -1,353 +1,108 @@
-# comparer.py
-
-import os
-import sys
-import re
-import string
-import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.workbook import Workbook
-from openpyxl.styles import Font, Alignment
-from openpyxl.utils import get_column_letter
-import yaml
-from pathlib import Path
-from typing import Dict, List, Optional
-
-class Config:
-  """Configuration loader"""
-
-  def __init__(self, config_path: str):
-    with open(config_path, 'r') as f:
-      self.config = yaml.safe_load(f)
-
-  @property
-  def input_directory(self) -> str:
-    return self.config['input_directory']
-
-  @property
-  def input_filename(self) -> str:
-    return self.config['input_filename']
-
-  @property
-  def output_directory(self) -> str:
-    return self.config['output_directory']
-
-  @property
-  def output_filename(self) -> str:
-    return self.config['output_filename']
-
-  @property
-  def column_widths(self) -> dict:
-    return self.config.get('column_widths', {})
-
-class TranscriptNormalizer:
-  """Handles text normalization and comparison"""
-
-  @staticmethod
-  def normalize(text: str) -> List[str]:
-    """Normalize text using the nltk_jiwer_utils library's normalize_string"""
-    if not isinstance(text, str):
-      return []
-
-    # Use the normalize_string function from nltk_jiwer_utils
-    from nltk_jiwer_utils import normalize_string
-    return normalize_string(text)
-
-  @staticmethod
-  def delta_and_ops(left: str, right: str) -> tuple[int, int, int, int]:
-    """Calculate difference between two transcripts using jiwer for proper alignment"""
-    from nltk_jiwer_utils import get_jiwer_result
-
-    # Get jiwer result which properly aligns the transcripts
-    result = get_jiwer_result(left, right)
-
-    # Extract S, D, I from jiwer result
-    substitutions = result.get("substitutions", 0)
-    deletions = result.get("deletions", 0)
-    insertions = result.get("insertions", 0)
-
-    # Delta is total differences (S + D + I)
-    delta = substitutions + deletions + insertions
-
-    return delta, substitutions, deletions, insertions
-
-  @staticmethod
-  def delta(left: str, right: str) -> int:
-    """Calculate difference between two transcripts (backward compatibility)"""
-    differences, _, _, _ = TranscriptNormalizer.delta_and_ops(left, right)
-    return differences
-
-class WorkbookReader:
-  """Reads and parses input Excel workbook"""
-
-  REQUIRED_COLUMNS = ["speaker", "SeqNumRange", "SeqNum", "Transcript"]
-
-  def __init__(self, input_path: str):
-    self.input_path = input_path
-
-  def load_sessions(self) -> Dict[str, Dict[str, pd.DataFrame]]:
-    """Load all sessions from workbook"""
-    wb = load_workbook(self.input_path, read_only=True, data_only=True)
-    sessions = {}
-
-    for sheet_name in wb.sheetnames:
-      # Parse sheet name format: "Environment - SessionName"
-      if ' - ' in sheet_name:
-        environment, session_id = [part.strip() for part in sheet_name.split(' - ', 1)]
-
-        # Only process Triton and Vllm sheets
-        if environment.lower() not in ['triton', 'vllm']:
-          continue
-
-        # Initialize session if not exists
-        if session_id not in sessions:
-          sessions[session_id] = {}
-
-        # Read sheet data
-        df = pd.read_excel(
-          self.input_path,
-          sheet_name=sheet_name,
-          engine='openpyxl'
-        )
-
-        # Select required columns
-        # Find columns that match our required columns (case-insensitive)
-        available_cols = {col.lower(): col for col in df.columns}
-        selected_data = {}
-
-        for req_col in self.REQUIRED_COLUMNS:
-          if req_col.lower() in available_cols:
-            actual_col = available_cols[req_col.lower()]
-            selected_data[req_col] = df[actual_col]
-          else:
-            # If column not found, create empty series
-            selected_data[req_col] = pd.Series([None] * len(df))
-
-        result_df = pd.DataFrame(selected_data)
-
-        # Store in sessions dictionary
-        sessions[session_id][environment.lower()] = result_df
-
-    wb.close()
-    return sessions
-
-class EnvironmentComparer:
-  """Compares Triton and Vllm environments"""
-
-  def __init__(self, sessions: Dict[str, Dict[str, pd.DataFrame]]):
-    self.sessions = sessions
-
-  def build_output(self) -> pd.DataFrame:
-    """Build comparison output DataFrame"""
-    all_rows = []
-
-    for session_id, envs in self.sessions.items():
-      triton_df = envs.get('triton')
-      vllm_df = envs.get('vllm')
-
-      # Skip if either environment is missing
-      if triton_df is None or vllm_df is None:
-        print(f"Warning: Session '{session_id}' missing one environment")
-        continue
-
-      # Create lookup dictionaries for quick matching
-      triton_dict = {}
-      for idx, row in triton_df.iterrows():
-        key = (row['speaker'], row['SeqNum'])
-        triton_dict[key] = {
-          'index': idx,
-          'SeqNumRange': row['SeqNumRange'],
-          'Transcript': row['Transcript']
+def get_jiwer_result(gt: str, hyp: str) -> dict:
+    # Handle None or empty inputs
+    if gt is None or hyp is None:
+        return {
+            "wer": 200,
+            "substitutions": 0,
+            "deletions": 0,
+            "insertions": 0,
+            "references": 0,
+            "hypothesis": 0,
+            "alignment": []
+        }
+    
+    # Convert to string and strip whitespace
+    gt = str(gt).strip() if gt is not None else ""
+    hyp = str(hyp).strip() if hyp is not None else ""
+    
+    if gt == '' or hyp == '':
+        return {
+            "wer": 200,
+            "substitutions": 0,
+            "deletions": 0,
+            "insertions": 0,
+            "references": 0,
+            "hypothesis": 0,
+            "alignment": []
         }
 
-      vllm_dict = {}
-      for idx, row in vllm_df.iterrows():
-        key = (row['speaker'], row['SeqNum'])
-        vllm_dict[key] = {
-          'index': idx,
-          'SeqNumRange': row['SeqNumRange'],
-          'Transcript': row['Transcript']
-        }
-
-      # Get all unique keys from both environments
-      all_keys = set(triton_dict.keys()) | set(vllm_dict.keys())
-
-      # Sort keys: agent0 first, then customer0, then others
-      def sort_key(x):
-        speaker, seq_num = x
-        # Sort by speaker (agent0 before customer0), then by SeqNum
-        return (0 if speaker == 'agent0' else 1 if speaker == 'customer0' else 2, seq_num)
-
-      sorted_keys = sorted(all_keys, key=sort_key)
-
-      # Process each matched pair
-      for key_idx, key in enumerate(sorted_keys, start=1):
-        speaker, seq_num = key
-
-        triton_data = triton_dict.get(key)
-        vllm_data = vllm_dict.get(key)
-
-        # Calculate delta and S, D, I values
-        if triton_data and vllm_data:
-          delta, substitutions, deletions, insertions = TranscriptNormalizer.delta_and_ops(
-            triton_data['Transcript'],
-            vllm_data['Transcript']
-          )
-        elif triton_data:
-          delta, substitutions, deletions, insertions = TranscriptNormalizer.delta_and_ops(
-            triton_data['Transcript'], ""
-          )
-        elif vllm_data:
-          delta, substitutions, deletions, insertions = TranscriptNormalizer.delta_and_ops(
-            "", vllm_data['Transcript']
-          )
+    ref_tokens = normalize_string(gt)
+    hyp_tokens = normalize_string(hyp)
+    
+    # Check if normalization resulted in empty tokens
+    if not ref_tokens:
+        # Empty reference after normalization
+        if not hyp_tokens:
+            # Both are empty
+            return {
+                "wer": 0,
+                "substitutions": 0,
+                "deletions": 0,
+                "insertions": 0,
+                "references": 0,
+                "hypothesis": 0,
+                "alignment": []
+            }
         else:
-          delta = substitutions = deletions = insertions = 0
+            # Only reference is empty after normalization
+            return {
+                "wer": 100,  # WER is 100% when reference is empty but hypothesis has content
+                "substitutions": 0,
+                "deletions": 0,
+                "insertions": len(hyp_tokens),
+                "references": 0,
+                "hypothesis": len(hyp_tokens),
+                "alignment": []
+            }
+    
+    ref_str = " ".join(ref_tokens)
+    hyp_str = " ".join(hyp_tokens)
 
-        # Build row
-        row = {
-          'index': len(all_rows) + 1,
-          'session_id': session_id,
-          'Triton_SeqNum': seq_num if triton_data else None,
-          'Triton_SeqNumRange': triton_data['SeqNumRange'] if triton_data else None,
-          'Triton_Speaker': speaker if triton_data else None,
-          'Triton_Transcript': triton_data['Transcript'] if triton_data else None,
-          'Vllm_SeqNum': seq_num if vllm_data else None,
-          'Vllm_SeqNumRange': vllm_data['SeqNumRange'] if vllm_data else None,
-          'Vllm_Speaker': speaker if vllm_data else None,
-          'Vllm_Transcript': vllm_data['Transcript'] if vllm_data else None,
-          'Delta': delta,
-          'S': substitutions,
-          'D': deletions,
-          'I': insertions
+    try:
+        measures = compute_measures(ref_str, hyp_str)
+        alignment = process_words(ref_str, hyp_str)
+    except Exception as e:
+        # Handle jiwer errors
+        print(f"Jiwer error: {e} for gt='{gt}', hyp='{hyp}'")
+        return {
+            "wer": 100,
+            "substitutions": 0,
+            "deletions": 0,
+            "insertions": 0,
+            "references": len(ref_tokens),
+            "hypothesis": len(hyp_tokens),
+            "alignment": []
         }
 
-        all_rows.append(row)
+    aligned_output = []
+    for group in alignment.alignments:
+        for chunk in group:
+            try:
+                op = chunk.type
+                ref_segment = ref_tokens[chunk.ref_start_idx:chunk.ref_end_idx]
+                hyp_segment = hyp_tokens[chunk.hyp_start_idx:chunk.hyp_end_idx]
 
-    # Create DataFrame
-    columns = [
-      'index', 'session_id',
-      'Triton_SeqNum', 'Triton_SeqNumRange', 'Triton_Speaker', 'Triton_Transcript',
-      'Vllm_SeqNum', 'Vllm_SeqNumRange', 'Vllm_Speaker', 'Vllm_Transcript',
-      'Delta', 'S', 'D', 'I'
-    ]
+                if op == 'equal':
+                    for rw, hw in zip(ref_segment, hyp_segment):
+                        aligned_output.append(f"CORRECT | {rw} | {hw}")
+                elif op == 'substitute':
+                    for rw, hw in zip(ref_segment, hyp_segment):
+                        aligned_output.append(f"SUBSTITUTION | {rw} | {hw}")
+                elif op == 'insert':
+                    for hw in hyp_segment:
+                        aligned_output.append(f"INSERTION |  | {hw}")
+                elif op == 'delete':
+                    for rw in ref_segment:
+                        aligned_output.append(f"DELETION | {rw} | ")
+            except Exception:
+                continue
 
-    return pd.DataFrame(all_rows, columns=columns)
-
-class WorkbookWriter:
-  """Writes output to Excel workbook with formatting"""
-
-  def __init__(self, df: pd.DataFrame, output_path: str, column_widths: dict):
-    self.df = df
-    self.output_path = output_path
-    self.column_widths = column_widths
-
-  def write(self):
-    """Write DataFrame to Excel with formatting"""
-    # Create output directory if it doesn't exist
-    output_dir = os.path.dirname(self.output_path)
-    if output_dir:
-      os.makedirs(output_dir, exist_ok=True)
-
-    # Create a new workbook using Workbook() instead of load_workbook()
-    from openpyxl import Workbook
-    wb = Workbook()
-
-    # Create or get the Comparison sheet
-    if 'Comparison' in wb.sheetnames:
-      ws = wb['Comparison']
-    else:
-      ws = wb.active
-      ws.title = 'Comparison'
-
-    # Write the title row (merged cells) - Update range for 14 columns (A1:N1)
-    ws.merge_cells('A1:N1')
-    title_cell = ws['A1']
-    title_cell.value = "Transcript Comparison - Triton vs Vllm"
-    title_cell.font = Font(name='Aptos', size=9, bold=True)
-    title_cell.alignment = Alignment(horizontal='center', vertical='center')
-
-    # Write headers starting from row 2
-    headers = list(self.df.columns)
-    for col_idx, header in enumerate(headers, start=1):
-      cell = ws.cell(row=2, column=col_idx, value=header)
-      cell.font = Font(name='Aptos', size=9, bold=True)
-
-    # Write data starting from row 3
-    for row_idx, row in enumerate(self.df.itertuples(index=False), start=3):
-      for col_idx, value in enumerate(row, start=1):
-        cell = ws.cell(row=row_idx, column=col_idx, value=value)
-        cell.font = Font(name='Aptos', size=9)
-
-    # Apply column widths
-    for col_idx, header in enumerate(headers, start=1):
-      col_letter = get_column_letter(col_idx)
-      if header in self.column_widths:
-        ws.column_dimensions[col_letter].width = self.column_widths[header]
-      else:
-        # Auto-width for other columns
-        ws.column_dimensions[col_letter].width = 15
-
-    # Freeze panes (top 2 rows)
-    ws.freeze_panes = 'A3'
-
-    # Add filter to headers - Update range for 14 columns (A2:N2)
-    ws.auto_filter.ref = f"A2:{get_column_letter(len(headers))}2"
-
-    # Save the workbook
-    wb.save(self.output_path)
-
-class CompareEnvironmentsApp:
-  """Main application controller"""
-
-  def __init__(self, config_path: str):
-    self.config = Config(config_path)
-
-  def run(self):
-    """Run the complete comparison workflow"""
-    # Build paths
-    input_path = os.path.join(
-      self.config.input_directory,
-      self.config.input_filename
-    )
-
-    output_path = os.path.join(
-      self.config.output_directory,
-      self.config.output_filename
-    )
-
-    # Read input
-    print(f"Reading input from: {input_path}")
-    reader = WorkbookReader(input_path)
-    sessions = reader.load_sessions()
-
-    print(f"Found {len(sessions)} session(s)")
-
-    # Compare environments
-    print("Comparing environments...")
-    comparer = EnvironmentComparer(sessions)
-    result_df = comparer.build_output()
-
-    print(f"Generated {len(result_df)} comparison rows")
-
-    # Write output
-    print(f"Writing output to: {output_path}")
-    writer = WorkbookWriter(result_df, output_path, self.config.column_widths)
-    writer.write()
-
-    print("Done!")
-
-# Add this to the end of comparer.py
-
-def main(config_file="config.yaml"):
-  try:
-    # Run the application
-    app = CompareEnvironmentsApp(config_file)
-    app.run()
-    print("Comparison completed successfully!")
-  except Exception as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-
-if __name__ == "__main__":
-  main("config.yaml")
+    return {
+        "wer": 100 * min(1.0, round(measures['wer'], 2)),
+        "substitutions": measures['substitutions'],
+        "deletions": measures['deletions'],
+        "insertions": measures['insertions'],
+        "references": len(ref_tokens),
+        "hypothesis": len(hyp_tokens),
+        "alignment": aligned_output
+    }
