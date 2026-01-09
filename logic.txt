@@ -43,45 +43,38 @@ class Config:
 class TranscriptNormalizer:
   """Handles text normalization and comparison"""
 
-  # Define punctuation to remove
-  PUNCTUATION_TO_REMOVE = string.punctuation  # !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
-
   @staticmethod
   def normalize(text: str) -> List[str]:
-    """Normalize text: lowercase, remove punctuation, tokenize"""
+    """Normalize text using the nltk_jiwer_utils library's normalize_string"""
     if not isinstance(text, str):
       return []
 
-    # Convert to lowercase
-    text = text.lower()
+    # Use the normalize_string function from nltk_jiwer_utils
+    from nltk_jiwer_utils import normalize_string
+    return normalize_string(text)
 
-    # Remove punctuation
-    translator = str.maketrans('', '', TranscriptNormalizer.PUNCTUATION_TO_REMOVE)
-    text = text.translate(translator)
+  @staticmethod
+  def delta_and_ops(left: str, right: str) -> tuple[int, int, int, int]:
+    """Calculate difference between two transcripts using jiwer for proper alignment"""
+    from nltk_jiwer_utils import get_jiwer_result
 
-    # Tokenize and remove empty tokens
-    tokens = [token for token in text.split() if token]
+    # Get jiwer result which properly aligns the transcripts
+    result = get_jiwer_result(left, right)
 
-    return tokens
+    # Extract S, D, I from jiwer result
+    substitutions = result.get("substitutions", 0)
+    deletions = result.get("deletions", 0)
+    insertions = result.get("insertions", 0)
+
+    # Delta is total differences (S + D + I)
+    delta = substitutions + deletions + insertions
+
+    return delta, substitutions, deletions, insertions
 
   @staticmethod
   def delta(left: str, right: str) -> int:
-    """Calculate difference between two transcripts"""
-    left_tokens = TranscriptNormalizer.normalize(left)
-    right_tokens = TranscriptNormalizer.normalize(right)
-
-    # Simple token-by-token comparison
-    differences = 0
-
-    # Compare up to the length of the shorter list
-    min_len = min(len(left_tokens), len(right_tokens))
-    for i in range(min_len):
-      if left_tokens[i] != right_tokens[i]:
-        differences += 1
-
-    # Add differences for extra tokens in either list
-    differences += abs(len(left_tokens) - len(right_tokens))
-
+    """Calculate difference between two transcripts (backward compatibility)"""
+    differences, _, _, _ = TranscriptNormalizer.delta_and_ops(left, right)
     return differences
 
 class WorkbookReader:
@@ -194,18 +187,22 @@ class EnvironmentComparer:
         triton_data = triton_dict.get(key)
         vllm_data = vllm_dict.get(key)
 
-        # Calculate delta
+        # Calculate delta and S, D, I values
         if triton_data and vllm_data:
-          delta = TranscriptNormalizer.delta(
+          delta, substitutions, deletions, insertions = TranscriptNormalizer.delta_and_ops(
             triton_data['Transcript'],
             vllm_data['Transcript']
           )
         elif triton_data:
-          delta = TranscriptNormalizer.delta(triton_data['Transcript'], "")
+          delta, substitutions, deletions, insertions = TranscriptNormalizer.delta_and_ops(
+            triton_data['Transcript'], ""
+          )
         elif vllm_data:
-          delta = TranscriptNormalizer.delta("", vllm_data['Transcript'])
+          delta, substitutions, deletions, insertions = TranscriptNormalizer.delta_and_ops(
+            "", vllm_data['Transcript']
+          )
         else:
-          delta = 0
+          delta = substitutions = deletions = insertions = 0
 
         # Build row
         row = {
@@ -219,7 +216,10 @@ class EnvironmentComparer:
           'Vllm_SeqNumRange': vllm_data['SeqNumRange'] if vllm_data else None,
           'Vllm_Speaker': speaker if vllm_data else None,
           'Vllm_Transcript': vllm_data['Transcript'] if vllm_data else None,
-          'Delta': delta
+          'Delta': delta,
+          'S': substitutions,
+          'D': deletions,
+          'I': insertions
         }
 
         all_rows.append(row)
@@ -229,7 +229,7 @@ class EnvironmentComparer:
       'index', 'session_id',
       'Triton_SeqNum', 'Triton_SeqNumRange', 'Triton_Speaker', 'Triton_Transcript',
       'Vllm_SeqNum', 'Vllm_SeqNumRange', 'Vllm_Speaker', 'Vllm_Transcript',
-      'Delta'
+      'Delta', 'S', 'D', 'I'
     ]
 
     return pd.DataFrame(all_rows, columns=columns)
@@ -260,8 +260,8 @@ class WorkbookWriter:
       ws = wb.active
       ws.title = 'Comparison'
 
-    # Write the title row (merged cells)
-    ws.merge_cells('A1:K1')
+    # Write the title row (merged cells) - Update range for 14 columns (A1:N1)
+    ws.merge_cells('A1:N1')
     title_cell = ws['A1']
     title_cell.value = "Transcript Comparison - Triton vs Vllm"
     title_cell.font = Font(name='Aptos', size=9, bold=True)
@@ -291,7 +291,7 @@ class WorkbookWriter:
     # Freeze panes (top 2 rows)
     ws.freeze_panes = 'A3'
 
-    # Add filter to headers
+    # Add filter to headers - Update range for 14 columns (A2:N2)
     ws.auto_filter.ref = f"A2:{get_column_letter(len(headers))}2"
 
     # Save the workbook
@@ -351,25 +351,3 @@ def main(config_file="config.yaml"):
 
 if __name__ == "__main__":
   main("config.yaml")
-  
-
-==============================
-
-
-# config.yaml
-input_directory: "."
-input_filename: "compare-envs-input.xlsx"
-output_directory: "."
-output_filename: "compare-envs-output.xlsx"
-column_widths:
-  index: 8
-  session_id: 20
-  Triton_SeqNum: 8
-  Triton_SeqNumRange: 12
-  Triton_Speaker: 12
-  Triton_Transcript: 30
-  Vllm_SeqNum: 8
-  Vllm_SeqNumRange: 12
-  Vllm_Speaker: 12
-  Vllm_Transcript: 30
-  Delta: 6
