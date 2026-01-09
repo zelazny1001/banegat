@@ -1,428 +1,357 @@
-# test_comparer.py
+# comparer.py
 
 import os
-import shutil
-import tempfile
-import unittest
-from pathlib import Path
-
+import sys
+import re
+import string
 import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.workbook import Workbook
+from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
 import yaml
-from openpyxl import Workbook, load_workbook
+from pathlib import Path
+from typing import Dict, List, Optional
 
-from comparer import (
-    Config,
-    TranscriptNormalizer,
-    WorkbookReader,
-    EnvironmentComparer,
-    WorkbookWriter,
-    CompareEnvironmentsApp
-)
+class Config:
+  """Configuration loader"""
 
+  def __init__(self, config_path: str):
+    with open(config_path, 'r') as f:
+      self.config = yaml.safe_load(f)
 
-class TestTranscriptNormalizer(unittest.TestCase):
-    def test_normalize_basic(self):
-        text = "Hello, World!"
-        result = TranscriptNormalizer.normalize(text)
-        self.assertEqual(result, ["hello", "world"])
+  @property
+  def input_directory(self) -> str:
+    return self.config['input_directory']
 
-    def test_normalize_punctuation(self):
-        text = "It's a test... right?"
-        result = TranscriptNormalizer.normalize(text)
-        self.assertEqual(result, ["its", "a", "test", "right"])
+  @property
+  def input_filename(self) -> str:
+    return self.config['input_filename']
 
-    def test_normalize_non_string(self):
-        result = TranscriptNormalizer.normalize(None)
-        self.assertEqual(result, [])
+  @property
+  def output_directory(self) -> str:
+    return self.config['output_directory']
 
-        result = TranscriptNormalizer.normalize(123)
-        self.assertEqual(result, [])
+  @property
+  def output_filename(self) -> str:
+    return self.config['output_filename']
 
-    def test_normalize_empty_string(self):
-        result = TranscriptNormalizer.normalize("")
-        self.assertEqual(result, [])
+  @property
+  def column_widths(self) -> dict:
+    return self.config.get('column_widths', {})
 
-    def test_delta_identical(self):
-        left = "Hello World"
-        right = "Hello World"
-        delta = TranscriptNormalizer.delta(left, right)
-        self.assertEqual(delta, 0)
+class TranscriptNormalizer:
+  """Handles text normalization and comparison"""
 
-    def test_delta_different_punctuation(self):
-        left = "Hello, World!"
-        right = "Hello World"
-        delta = TranscriptNormalizer.delta(left, right)
-        self.assertEqual(delta, 0)  # Punctuation is removed
+  # Define punctuation to remove
+  PUNCTUATION_TO_REMOVE = string.punctuation  # !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
 
-    def test_delta_different_case(self):
-        left = "HELLO WORLD"
-        right = "hello world"
-        delta = TranscriptNormalizer.delta(left, right)
-        self.assertEqual(delta, 0)  # Case insensitive
+  @staticmethod
+  def normalize(text: str) -> List[str]:
+    """Normalize text: lowercase, remove punctuation, tokenize"""
+    if not isinstance(text, str):
+      return []
 
-    def test_delta_one_difference(self):
-        left = "Hello World"
-        right = "Hello Universe"
-        delta = TranscriptNormalizer.delta(left, right)
-        self.assertEqual(delta, 1)
+    # Convert to lowercase
+    text = text.lower()
 
-    def test_delta_length_difference(self):
-        left = "Hello World"
-        right = "Hello World Extra"
-        delta = TranscriptNormalizer.delta(left, right)
-        self.assertEqual(delta, 1)  # Extra token counts as difference
+    # Remove punctuation
+    translator = str.maketrans('', '', TranscriptNormalizer.PUNCTUATION_TO_REMOVE)
+    text = text.translate(translator)
 
-    def test_delta_empty_strings(self):
-        delta = TranscriptNormalizer.delta("", "")
-        self.assertEqual(delta, 0)
+    # Tokenize and remove empty tokens
+    tokens = [token for token in text.split() if token]
 
+    return tokens
 
-class TestWorkbookReader(unittest.TestCase):
-    def setUp(self):
-        # Create a temporary Excel file for testing
-        self.temp_dir = tempfile.mkdtemp()
-        self.temp_file = os.path.join(self.temp_dir, "test_input.xlsx")
+  @staticmethod
+  def delta(left: str, right: str) -> int:
+    """Calculate difference between two transcripts"""
+    left_tokens = TranscriptNormalizer.normalize(left)
+    right_tokens = TranscriptNormalizer.normalize(right)
 
-        # Create test data
-        with pd.ExcelWriter(self.temp_file, engine='openpyxl') as writer:
-            # Triton - Session1
-            df1 = pd.DataFrame({
-                '_time': ['2024-01-01', '2024-01-01'],
-                'correlationID': ['123', '123'],
-                'speaker': ['Agent', 'Customer'],
-                'SeqNumRange': ['1-2', '3-4'],
-                'SeqNum': [1, 2],
-                'Transcript': ['Hello', 'Hi there']
-            })
-            df1.to_excel(writer, sheet_name='Triton - Session1', index=False)
+    # Simple token-by-token comparison
+    differences = 0
 
-            # Vllm - Session1
-            df2 = pd.DataFrame({
-                '_time': ['2024-01-01', '2024-01-01'],
-                'correlationID': ['123', '123'],
-                'speaker': ['Agent', 'Customer'],
-                'SeqNumRange': ['1-2', '3-4'],
-                'SeqNum': [1, 2],
-                'Transcript': ['Hello!', 'Hi there']
-            })
-            df2.to_excel(writer, sheet_name='Vllm - Session1', index=False)
+    # Compare up to the length of the shorter list
+    min_len = min(len(left_tokens), len(right_tokens))
+    for i in range(min_len):
+      if left_tokens[i] != right_tokens[i]:
+        differences += 1
 
-    def tearDown(self):
-        # Clean up temp files
-        if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+    # Add differences for extra tokens in either list
+    differences += abs(len(left_tokens) - len(right_tokens))
 
-    def test_load_sessions(self):
-        reader = WorkbookReader(self.temp_file)
-        sessions = reader.load_sessions()
+    return differences
 
-        # Check structure
-        self.assertIn('Session1', sessions)
-        self.assertIn('triton', sessions['Session1'])
-        self.assertIn('vllm', sessions['Session1'])
+class WorkbookReader:
+  """Reads and parses input Excel workbook"""
 
-        # Check data
-        triton_df = sessions['Session1']['triton']
-        self.assertEqual(len(triton_df), 2)
-        self.assertEqual(list(triton_df.columns), ['speaker', 'SeqNumRange', 'SeqNum', 'Transcript'])
-        self.assertEqual(triton_df.iloc[0]['Transcript'], 'Hello')
+  REQUIRED_COLUMNS = ["speaker", "SeqNumRange", "SeqNum", "Transcript"]
 
-    def test_required_columns(self):
-        # Verify REQUIRED_COLUMNS attribute
-        self.assertEqual(
-            WorkbookReader.REQUIRED_COLUMNS,
-            ["speaker", "SeqNumRange", "SeqNum", "Transcript"]
+  def __init__(self, input_path: str):
+    self.input_path = input_path
+
+  def load_sessions(self) -> Dict[str, Dict[str, pd.DataFrame]]:
+    """Load all sessions from workbook"""
+    wb = load_workbook(self.input_path, read_only=True, data_only=True)
+    sessions = {}
+
+    for sheet_name in wb.sheetnames:
+      # Parse sheet name format: "Environment - SessionName"
+      if ' - ' in sheet_name:
+        environment, session_id = [part.strip() for part in sheet_name.split(' - ', 1)]
+
+        # Only process Triton and Vllm sheets
+        if environment.lower() not in ['triton', 'vllm']:
+          continue
+
+        # Initialize session if not exists
+        if session_id not in sessions:
+          sessions[session_id] = {}
+
+        # Read sheet data
+        df = pd.read_excel(
+          self.input_path,
+          sheet_name=sheet_name,
+          engine='openpyxl'
         )
 
+        # Select required columns
+        # Find columns that match our required columns (case-insensitive)
+        available_cols = {col.lower(): col for col in df.columns}
+        selected_data = {}
 
-class TestEnvironmentComparer(unittest.TestCase):
-    def setUp(self):
-        # Create sample session data
-        triton_df = pd.DataFrame({
-            'speaker': ['Agent', 'Customer'],
-            'SeqNumRange': ['1-2', '3-4'],
-            'SeqNum': [1, 2],
-            'Transcript': ['Hello World', 'How are you?']
-        })
+        for req_col in self.REQUIRED_COLUMNS:
+          if req_col.lower() in available_cols:
+            actual_col = available_cols[req_col.lower()]
+            selected_data[req_col] = df[actual_col]
+          else:
+            # If column not found, create empty series
+            selected_data[req_col] = pd.Series([None] * len(df))
 
-        vllm_df = pd.DataFrame({
-            'speaker': ['Agent', 'Customer'],
-            'SeqNumRange': ['1-2', '3-4'],
-            'SeqNum': [1, 2],
-            'Transcript': ['Hello World!', 'How are you doing?']
-        })
+        result_df = pd.DataFrame(selected_data)
 
-        self.sessions = {
-            'Session1': {
-                'triton': triton_df,
-                'vllm': vllm_df
-            }
+        # Store in sessions dictionary
+        sessions[session_id][environment.lower()] = result_df
+
+    wb.close()
+    return sessions
+
+class EnvironmentComparer:
+  """Compares Triton and Vllm environments"""
+
+  def __init__(self, sessions: Dict[str, Dict[str, pd.DataFrame]]):
+    self.sessions = sessions
+
+  def build_output(self) -> pd.DataFrame:
+    """Build comparison output DataFrame"""
+    all_rows = []
+
+    for session_id, envs in self.sessions.items():
+      triton_df = envs.get('triton')
+      vllm_df = envs.get('vllm')
+
+      # Skip if either environment is missing
+      if triton_df is None or vllm_df is None:
+        print(f"Warning: Session '{session_id}' missing one environment")
+        continue
+
+      # Create lookup dictionaries for quick matching
+      triton_dict = {}
+      for idx, row in triton_df.iterrows():
+        key = (row['speaker'], row['SeqNum'])
+        triton_dict[key] = {
+          'index': idx,
+          'SeqNumRange': row['SeqNumRange'],
+          'Transcript': row['Transcript']
         }
 
-    def test_build_output_structure(self):
-        comparer = EnvironmentComparer(self.sessions)
-        result = comparer.build_output()
-
-        # Check columns
-        expected_columns = [
-            'index', 'session_id',
-            'Triton_SeqNum', 'Triton_SeqNumRange', 'Triton_Speaker', 'Triton_Transcript',
-            'Vllm_SeqNum', 'Vllm_SeqNumRange', 'Vllm_Speaker', 'Vllm_Transcript',
-            'Delta'
-        ]
-        self.assertEqual(list(result.columns), expected_columns)
-
-    def test_build_output_data(self):
-        comparer = EnvironmentComparer(self.sessions)
-        result = comparer.build_output()
-
-        # Check number of rows
-        self.assertEqual(len(result), 2)
-
-        # Check first row
-        row1 = result.iloc[0]
-        self.assertEqual(row1['index'], 1)
-        self.assertEqual(row1['session_id'], 'Session1')
-        self.assertEqual(row1['Triton_Transcript'], 'Hello World')
-        self.assertEqual(row1['Vllm_Transcript'], 'Hello World!')
-        self.assertEqual(row1['Delta'], 0)  # Same after normalization
-
-    def test_build_output_unequal_lengths(self):
-        # Test with unequal row counts
-        triton_df = pd.DataFrame({
-            'speaker': ['Agent'],
-            'SeqNumRange': ['1-2'],
-            'SeqNum': [1],
-            'Transcript': ['Hello']
-        })
-
-        vllm_df = pd.DataFrame({
-            'speaker': ['Agent', 'Customer'],
-            'SeqNumRange': ['1-2', '3-4'],
-            'SeqNum': [1, 2],
-            'Transcript': ['Hello', 'Hi']
-        })
-
-        sessions = {'Session1': {'triton': triton_df, 'vllm': vllm_df}}
-        comparer = EnvironmentComparer(sessions)
-        result = comparer.build_output()
-
-        # Should have 2 rows (max length)
-        self.assertEqual(len(result), 2)
-
-        # Second row should have None/NaN for Triton values
-        row2 = result.iloc[1]
-        self.assertTrue(pd.isna(row2['Triton_SeqNum']))
-
-    def test_build_output_missing_environment(self):
-        # Test with missing vllm environment
-        sessions = {
-            'Session1': {
-                'triton': pd.DataFrame({
-                    'speaker': ['Agent'],
-                    'SeqNumRange': ['1-2'],
-                    'SeqNum': [1],
-                    'Transcript': ['Hello']
-                })
-            }
+      vllm_dict = {}
+      for idx, row in vllm_df.iterrows():
+        key = (row['speaker'], row['SeqNum'])
+        vllm_dict[key] = {
+          'index': idx,
+          'SeqNumRange': row['SeqNumRange'],
+          'Transcript': row['Transcript']
         }
 
-        comparer = EnvironmentComparer(sessions)
-        result = comparer.build_output()
+      # Get all unique keys from both environments
+      all_keys = set(triton_dict.keys()) | set(vllm_dict.keys())
 
-        # Should be empty (skipped due to missing vllm)
-        self.assertEqual(len(result), 0)
+      # Sort keys: agent0 first, then customer0, then others
+      def sort_key(x):
+        speaker, seq_num = x
+        # Sort by speaker (agent0 before customer0), then by SeqNum
+        return (0 if speaker == 'agent0' else 1 if speaker == 'customer0' else 2, seq_num)
 
+      sorted_keys = sorted(all_keys, key=sort_key)
 
-class TestWorkbookWriter(unittest.TestCase):
-    def setUp(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.temp_file = os.path.join(self.temp_dir, "test_output.xlsx")
+      # Process each matched pair
+      for key_idx, key in enumerate(sorted_keys, start=1):
+        speaker, seq_num = key
 
-        self.test_df = pd.DataFrame({
-            'index': [1, 2],
-            'session_id': ['Session1', 'Session1'],
-            'Triton_SeqNum': [1, 2],
-            'Triton_Speaker': ['Agent', 'Customer'],
-            'Triton_Transcript': ['Hello', 'Hi'],
-            'Vllm_SeqNum': [1, 2],
-            'Vllm_Speaker': ['Agent', 'Customer'],
-            'Vllm_Transcript': ['Hello!', 'Hi'],
-            'Delta': [0, 0]
-        })
+        triton_data = triton_dict.get(key)
+        vllm_data = vllm_dict.get(key)
 
-        self.column_widths = {
-            'index': 8,
-            'session_id': 20,
-            'Triton_SeqNum': 8,
-            'Delta': 6
+        # Calculate delta
+        if triton_data and vllm_data:
+          delta = TranscriptNormalizer.delta(
+            triton_data['Transcript'],
+            vllm_data['Transcript']
+          )
+        elif triton_data:
+          delta = TranscriptNormalizer.delta(triton_data['Transcript'], "")
+        elif vllm_data:
+          delta = TranscriptNormalizer.delta("", vllm_data['Transcript'])
+        else:
+          delta = 0
+
+        # Build row
+        row = {
+          'index': len(all_rows) + 1,
+          'session_id': session_id,
+          'Triton_SeqNum': seq_num if triton_data else None,
+          'Triton_SeqNumRange': triton_data['SeqNumRange'] if triton_data else None,
+          'Triton_Speaker': speaker if triton_data else None,
+          'Triton_Transcript': triton_data['Transcript'] if triton_data else None,
+          'Vllm_SeqNum': seq_num if vllm_data else None,
+          'Vllm_SeqNumRange': vllm_data['SeqNumRange'] if vllm_data else None,
+          'Vllm_Speaker': speaker if vllm_data else None,
+          'Vllm_Transcript': vllm_data['Transcript'] if vllm_data else None,
+          'Delta': delta
         }
 
-    def tearDown(self):
-        # Use shutil.rmtree to handle nested directories
-        if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+        all_rows.append(row)
 
-    def test_write_creates_file(self):
-        writer = WorkbookWriter(self.test_df, self.temp_file, self.column_widths)
-        writer.write()
+    # Create DataFrame
+    columns = [
+      'index', 'session_id',
+      'Triton_SeqNum', 'Triton_SeqNumRange', 'Triton_Speaker', 'Triton_Transcript',
+      'Vllm_SeqNum', 'Vllm_SeqNumRange', 'Vllm_Speaker', 'Vllm_Transcript',
+      'Delta'
+    ]
 
-        self.assertTrue(os.path.exists(self.temp_file))
+    return pd.DataFrame(all_rows, columns=columns)
 
-    def test_write_correct_sheet_name(self):
-        writer = WorkbookWriter(self.test_df, self.temp_file, self.column_widths)
-        writer.write()
+class WorkbookWriter:
+  """Writes output to Excel workbook with formatting"""
 
-        wb = load_workbook(self.temp_file)
-        self.assertIn('Comparison', wb.sheetnames)
+  def __init__(self, df: pd.DataFrame, output_path: str, column_widths: dict):
+    self.df = df
+    self.output_path = output_path
+    self.column_widths = column_widths
 
-    def test_write_correct_data(self):
-        writer = WorkbookWriter(self.test_df, self.temp_file, self.column_widths)
-        writer.write()
+  def write(self):
+    """Write DataFrame to Excel with formatting"""
+    # Create output directory if it doesn't exist
+    output_dir = os.path.dirname(self.output_path)
+    if output_dir:
+      os.makedirs(output_dir, exist_ok=True)
 
-        df_read = pd.read_excel(self.temp_file, sheet_name='Comparison', skiprows=1)
+    # Create a new workbook using Workbook() instead of load_workbook()
+    from openpyxl import Workbook
+    wb = Workbook()
 
-        # Check data matches
-        self.assertEqual(len(df_read), 2)
-        self.assertEqual(df_read.iloc[0]['session_id'], 'Session1')
+    # Create or get the Comparison sheet
+    if 'Comparison' in wb.sheetnames:
+      ws = wb['Comparison']
+    else:
+      ws = wb.active
+      ws.title = 'Comparison'
 
-    def test_write_formatting(self):
-        writer = WorkbookWriter(self.test_df, self.temp_file, self.column_widths)
-        writer.write()
+    # Write the title row (merged cells)
+    ws.merge_cells('A1:K1')
+    title_cell = ws['A1']
+    title_cell.value = "Transcript Comparison - Triton vs Vllm"
+    title_cell.font = Font(name='Aptos', size=9, bold=True)
+    title_cell.alignment = Alignment(horizontal='center', vertical='center')
 
-        wb = load_workbook(self.temp_file)
-        ws = wb.active
+    # Write headers starting from row 2
+    headers = list(self.df.columns)
+    for col_idx, header in enumerate(headers, start=1):
+      cell = ws.cell(row=2, column=col_idx, value=header)
+      cell.font = Font(name='Aptos', size=9, bold=True)
 
-        # Check header is bold
-        header_cell = ws.cell(row=2, column=1)
-        self.assertTrue(header_cell.font.bold)
+    # Write data starting from row 3
+    for row_idx, row in enumerate(self.df.itertuples(index=False), start=3):
+      for col_idx, value in enumerate(row, start=1):
+        cell = ws.cell(row=row_idx, column=col_idx, value=value)
+        cell.font = Font(name='Aptos', size=9)
 
-        # Check freeze panes
-        self.assertEqual(ws.freeze_panes, 'A3')
+    # Apply column widths
+    for col_idx, header in enumerate(headers, start=1):
+      col_letter = get_column_letter(col_idx)
+      if header in self.column_widths:
+        ws.column_dimensions[col_letter].width = self.column_widths[header]
+      else:
+        # Auto-width for other columns
+        ws.column_dimensions[col_letter].width = 15
 
-        # Check column widths
-        self.assertEqual(ws.column_dimensions['A'].width, 8)  # index column
+    # Freeze panes (top 2 rows)
+    ws.freeze_panes = 'A3'
 
-    def test_write_creates_directory(self):
-        # Test that it creates output directory if it doesn't exist
-        nested_path = os.path.join(self.temp_dir, 'nested', 'output.xlsx')
-        writer = WorkbookWriter(self.test_df, nested_path, self.column_widths)
-        writer.write()
+    # Add filter to headers
+    ws.auto_filter.ref = f"A2:{get_column_letter(len(headers))}2"
 
-        self.assertTrue(os.path.exists(nested_path))
+    # Save the workbook
+    wb.save(self.output_path)
 
+class CompareEnvironmentsApp:
+  """Main application controller"""
 
-class TestCompareEnvironmentsApp(unittest.TestCase):
-    def setUp(self):
-        self.temp_dir = tempfile.mkdtemp()
+  def __init__(self, config_path: str):
+    self.config = Config(config_path)
 
-        # Create test input file
-        self.input_file = os.path.join(self.temp_dir, "input.xlsx")
-        with pd.ExcelWriter(self.input_file, engine='openpyxl') as writer:
-            df1 = pd.DataFrame({
-                '_time': ['2024-01-01'],
-                'correlationID': ['123'],
-                'speaker': ['Agent'],
-                'SeqNumRange': ['1-2'],
-                'SeqNum': [1],
-                'Transcript': ['Hello World']
-            })
-            df1.to_excel(writer, sheet_name='Triton - TestSession', index=False)
+  def run(self):
+    """Run the complete comparison workflow"""
+    # Build paths
+    input_path = os.path.join(
+      self.config.input_directory,
+      self.config.input_filename
+    )
 
-            df2 = pd.DataFrame({
-                '_time': ['2024-01-01'],
-                'correlationID': ['123'],
-                'speaker': ['Agent'],
-                'SeqNumRange': ['1-2'],
-                'SeqNum': [1],
-                'Transcript': ['Hello World!']
-            })
-            df2.to_excel(writer, sheet_name='Vllm - TestSession', index=False)
+    output_path = os.path.join(
+      self.config.output_directory,
+      self.config.output_filename
+    )
 
-        # Create test config file
-        self.config_file = os.path.join(self.temp_dir, "test_config.yaml")
-        self.output_file = os.path.join(self.temp_dir, "output.xlsx")
+    # Read input
+    print(f"Reading input from: {input_path}")
+    reader = WorkbookReader(input_path)
+    sessions = reader.load_sessions()
 
-        config_data = {
-            'input_directory': self.temp_dir,
-            'input_filename': 'input.xlsx',
-            'output_directory': self.temp_dir,
-            'output_filename': 'output.xlsx',
-            'column_widths': {
-                'index': 8,
-                'session_id': 20,
-                'Delta': 6
-            }
-        }
+    print(f"Found {len(sessions)} session(s)")
 
-        with open(self.config_file, 'w') as f:
-            yaml.dump(config_data, f)
+    # Compare environments
+    print("Comparing environments...")
+    comparer = EnvironmentComparer(sessions)
+    result_df = comparer.build_output()
 
-    def tearDown(self):
-        # Clean up
-        if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+    print(f"Generated {len(result_df)} comparison rows")
 
-    def test_app_run(self):
-        app = CompareEnvironmentsApp(self.config_file)
-        app.run()
+    # Write output
+    print(f"Writing output to: {output_path}")
+    writer = WorkbookWriter(result_df, output_path, self.config.column_widths)
+    writer.write()
 
-        # Check output file exists
-        self.assertTrue(os.path.exists(self.output_file))
+    print("Done!")
 
-        # Verify output content
-        df = pd.read_excel(self.output_file, sheet_name='Comparison', skiprows=1)
-        self.assertEqual(len(df), 1)
-        self.assertEqual(df.iloc[0]['session_id'], 'TestSession')
+# Add this to the end of comparer.py
 
+def main(config_file="config.yaml"):
+  try:
+    # Run the application
+    app = CompareEnvironmentsApp(config_file)
+    app.run()
+    print("Comparison completed successfully!")
+  except Exception as e:
+    print(f"Error: {e}")
+    sys.exit(1)
 
-class TestIntegration(unittest.TestCase):
-    """Integration tests using the actual sample files"""
-
-    def test_with_sample_files(self):
-        # Test with the actual compare-envs-input.xlsx if it exists
-        cwd = Path.cwd()
-        input_file = cwd / "compare-envs-input.xlsx"
-
-        if not input_file.exists():
-            self.skipTest("Sample input file not found")
-
-        # Run with actual file
-        reader = WorkbookReader(str(input_file))
-        sessions = reader.load_sessions()
-
-        # Should have sessions
-        self.assertGreater(len(sessions), 0)
-
-        # Build output
-        comparer = EnvironmentComparer(sessions)
-        result = comparer.build_output()
-
-        # Should have data
-        self.assertGreater(len(result), 0)
-
-        # All required columns should be present
-        expected_columns = [
-            'index', 'session_id',
-            'Triton_SeqNum', 'Triton_SeqNumRange', 'Triton_Speaker', 'Triton_Transcript',
-            'Vllm_SeqNum', 'Vllm_SeqNumRange', 'Vllm_Speaker', 'Vllm_Transcript',
-            'Delta'
-        ]
-        self.assertEqual(list(result.columns), expected_columns)
-
-
-def run_tests():
-    """Run all tests and return results"""
-    loader = unittest.TestLoader()
-    suite = loader.loadTestsFromModule(__import__(__name__))
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-    return result
-
-
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
-
+if __name__ == "__main__":
+  main("config.yaml")
+  
 
 ==============================
 
