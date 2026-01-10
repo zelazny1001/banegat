@@ -472,20 +472,27 @@ class HTMLReportWriter:
     """Format transcript with color-coded words"""
     html_parts = []
 
-    color_map = {
-      'correct': '#808080',  # Gray
-      'substitute': '#FF8C00',  # Orange
-      'delete': '#DC143C',  # Red
-      'insert': '#1E90FF'  # Blue
-    }
-
     for tag, word in tagged_words:
-      color = color_map.get(tag, '#000000')
       if word == '***':
         # Use lighter styling for placeholder markers
-        html_parts.append(f'<span style="color: {color}; font-style: italic;">{word}</span>')
+        html_parts.append(f'<span style="color: #999; font-style: italic;">{word}</span>')
+      elif tag == 'correct':
+        # Gray text for correct words
+        html_parts.append(f'<span style="color: #808080;">{word}</span>')
+      elif tag == 'substitute':
+        # Black text with orange background for substitutions
+        html_parts.append(
+          f'<span style="color: #000; background-color: #FF8C00; padding: 2px 4px; border-radius: 3px;">{word}</span>')
+      elif tag == 'delete':
+        # White text with red background for deletions
+        html_parts.append(
+          f'<span style="color: #fff; background-color: #DC143C; padding: 2px 4px; border-radius: 3px;">{word}</span>')
+      elif tag == 'insert':
+        # White text with blue background for insertions
+        html_parts.append(
+          f'<span style="color: #fff; background-color: #1E90FF; padding: 2px 4px; border-radius: 3px;">{word}</span>')
       else:
-        html_parts.append(f'<span style="color: {color};">{word}</span>')
+        html_parts.append(f'<span>{word}</span>')
 
     return ' '.join(html_parts)
 
@@ -501,17 +508,29 @@ class HTMLReportWriter:
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             font-size: 10px;
-            margin: 10px;
+            margin: 0;
+            padding: 0;
             background-color: #f5f5f5;
+        }}
+        .header {{
+            position: sticky;
+            top: 0;
+            background-color: #f5f5f5;
+            z-index: 100;
+            padding: 20px 20px 10px 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .content {{
+            padding: 0 20px 20px 20px;
         }}
         h1 {{
             color: #333;
             text-align: center;
-            margin-bottom: 10px;
+            margin: 0 0 10px 0;
         }}
         .legend {{
             text-align: center;
-            margin-bottom: 20px;
+            margin-bottom: 10px;
             padding: 10px;
             background-color: white;
             border-radius: 5px;
@@ -520,6 +539,27 @@ class HTMLReportWriter:
         .legend span {{
             margin: 0 15px;
             font-size: 14px;
+        }}
+        .legend .sample-correct {{
+            color: #808080;
+        }}
+        .legend .sample-substitute {{
+            color: #000;
+            background-color: #FF8C00;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }}
+        .legend .sample-delete {{
+            color: #fff;
+            background-color: #DC143C;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }}
+        .legend .sample-insert {{
+            color: #fff;
+            background-color: #1E90FF;
+            padding: 2px 6px;
+            border-radius: 3px;
         }}
         table {{
             width: 100%;
@@ -534,6 +574,9 @@ class HTMLReportWriter:
             text-align: left;
             font-weight: 600;
             border: 1px dotted #ddd;
+            position: sticky;
+            top: 120px;
+            z-index: 10;
         }}
         tr, td {{
           line-height: 0.5;
@@ -561,29 +604,33 @@ class HTMLReportWriter:
             color: #333;
         }}
         .transcript-col {{
+            line-height: 1.6;
         }}
     </style>
 </head>
 <body>
-    <h1>Transcript Comparison - Triton vs Vllm</h1>
+    <div class="header">
+        <h1>&xlarr; Triton (Reference GT) vs vLLM &xrarr;</h1>
 
-    <div class="legend">
-        <span style="color: #808080;">● Correct</span>
-        <span style="color: #FF8C00;">● Substitution</span>
-        <span style="color: #DC143C;">● Deletion</span>
-        <span style="color: #1E90FF;">● Insertion</span>
+        <div class="legend">
+            <!--span class="sample-correct">Correct</span-->
+            <span class="sample-substitute">Substitution</span>
+            <span class="sample-delete">Deletion</span>
+            <span class="sample-insert">Insertion</span>
+        </div>
     </div>
 
-    <table>
-        <thead>
-            <tr>
-                <th class="index-col">Index</th>
-                <th class="speaker-col">Speaker</th>
-                <th class="transcript-col">Triton Transcript (Reference GT)</th>
-                <th class="transcript-col">Vllm Transcript (Relative to Triton)</th>
-            </tr>
-        </thead>
-        <tbody>
+    <div class="content">
+        <table>
+            <thead>
+                <tr>
+                    <th class="index-col">Index</th>
+                    <th class="speaker-col">Speaker</th>
+                    <th class="transcript-col">Triton Transcript (Reference GT)</th>
+                    <th class="transcript-col">vLLM Transcript (Relative to Triton)</th>
+                </tr>
+            </thead>
+            <tbody>
 """
 
     # Add data rows
@@ -610,6 +657,7 @@ class HTMLReportWriter:
 
     html += """        </tbody>
     </table>
+    </div>
 </body>
 </html>"""
 
