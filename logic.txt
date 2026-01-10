@@ -389,6 +389,12 @@ class CompareEnvironmentsApp:
       self.config.output_filename
     )
 
+    # Create HTML output path (same name but .html extension)
+    html_output_path = os.path.join(
+      self.config.output_directory,
+      self.config.output_filename.replace('.xlsx', '.html')
+    )
+
     # Read input
     print(f"Reading input from: {input_path}")
     reader = WorkbookReader(input_path)
@@ -403,14 +409,213 @@ class CompareEnvironmentsApp:
 
     print(f"Generated {len(result_df)} comparison rows")
 
-    # Write output
-    print(f"Writing output to: {output_path}")
+    # Write Excel output
+    print(f"Writing Excel output to: {output_path}")
     writer = WorkbookWriter(result_df, output_path, self.config.column_widths)
     writer.write()
 
+    # Write HTML output
+    print(f"Writing HTML output to: {html_output_path}")
+    html_writer = HTMLReportWriter(result_df, html_output_path)
+    html_writer.write()
+
     print("Done!")
 
-# Add this to the end of comparer.py
+class HTMLReportWriter:
+  """Writes HTML report with color-coded transcripts"""
+
+  def __init__(self, df: pd.DataFrame, output_path: str):
+    self.df = df
+    self.output_path = output_path
+
+  def get_word_alignments(self, reference: str, hypothesis: str):
+    """Get word-level alignment with S/D/I tags using nltk_jiwer_utils"""
+    from nltk_jiwer_utils import get_jiwer_result, get_jiwer_alignment
+
+    if not reference and not hypothesis:
+      return [], []
+
+    # Get jiwer result and alignment
+    jiwer_result = get_jiwer_result(reference, hypothesis)
+    alignment = get_jiwer_alignment(jiwer_result)
+
+    # Parse the alignment strings
+    ref_tagged = []
+    hyp_tagged = []
+
+    for line in alignment:
+      # Parse format: "OPERATION | ref_word | hyp_word"
+      parts = [p.strip() for p in line.split("|")]
+      if len(parts) != 3:
+        continue
+
+      operation = parts[0].upper()
+      ref_word = parts[1]
+      hyp_word = parts[2]
+
+      if operation == "CORRECT":
+        ref_tagged.append(('correct', ref_word))
+        hyp_tagged.append(('correct', hyp_word))
+      elif operation == "SUBSTITUTION":
+        ref_tagged.append(('substitute', ref_word))
+        hyp_tagged.append(('substitute', hyp_word))
+      elif operation == "DELETION":
+        ref_tagged.append(('delete', ref_word))
+        hyp_tagged.append(('delete', '***'))
+      elif operation == "INSERTION":
+        ref_tagged.append(('insert', '***'))
+        hyp_tagged.append(('insert', hyp_word))
+
+    return ref_tagged, hyp_tagged
+
+  def format_transcript(self, tagged_words):
+    """Format transcript with color-coded words"""
+    html_parts = []
+
+    color_map = {
+      'correct': '#808080',  # Gray
+      'substitute': '#FF8C00',  # Orange
+      'delete': '#DC143C',  # Red
+      'insert': '#1E90FF'  # Blue
+    }
+
+    for tag, word in tagged_words:
+      color = color_map.get(tag, '#000000')
+      if word == '***':
+        # Use lighter styling for placeholder markers
+        html_parts.append(f'<span style="color: {color}; font-style: italic;">{word}</span>')
+      else:
+        html_parts.append(f'<span style="color: {color};">{word}</span>')
+
+    return ' '.join(html_parts)
+
+  def write(self):
+    """Write HTML report"""
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transcript Comparison - Triton vs Vllm</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 10px;
+            margin: 10px;
+            background-color: #f5f5f5;
+        }}
+        h1 {{
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+        }}
+        .legend {{
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            background-color: white;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }}
+        .legend span {{
+            margin: 0 15px;
+            font-size: 14px;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            background-color: white;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }}
+        th {{
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            border: 1px dotted #ddd;
+        }}
+        tr, td {{
+          line-height: 0.5;
+          vertical-align: middle;
+        }}
+        td {{
+            padding: 12px;
+            border: 1px dotted #ddd;
+        }}
+        tr:nth-child(even) {{
+            background-color: #f9f9f9;
+        }}
+        tr:hover {{
+            background-color: #f0f0f0;
+        }}
+        .index-col {{
+            width: 10px;
+            text-align: center;
+            font-weight: 600;
+            color: #666;
+        }}
+        .speaker-col {{
+            width: 40px;
+            font-weight: 600;
+            color: #333;
+        }}
+        .transcript-col {{
+        }}
+    </style>
+</head>
+<body>
+    <h1>Transcript Comparison - Triton vs Vllm</h1>
+
+    <div class="legend">
+        <span style="color: #808080;">● Correct</span>
+        <span style="color: #FF8C00;">● Substitution</span>
+        <span style="color: #DC143C;">● Deletion</span>
+        <span style="color: #1E90FF;">● Insertion</span>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th class="index-col">Index</th>
+                <th class="speaker-col">Speaker</th>
+                <th class="transcript-col">Triton Transcript (Reference GT)</th>
+                <th class="transcript-col">Vllm Transcript (Relative to Triton)</th>
+            </tr>
+        </thead>
+        <tbody>
+"""
+
+    # Add data rows
+    for _, row in self.df.iterrows():
+      index = row['index']
+      speaker = row['Triton_Speaker'] or row['Vllm_Speaker'] or 'Unknown'
+      triton_text = row['Triton_Transcript'] or ''
+      vllm_text = row['Vllm_Transcript'] or ''
+
+      # Get word alignments
+      ref_tagged, hyp_tagged = self.get_word_alignments(triton_text, vllm_text)
+
+      # Format transcripts with colors
+      triton_formatted = self.format_transcript(ref_tagged) if ref_tagged else triton_text
+      vllm_formatted = self.format_transcript(hyp_tagged) if hyp_tagged else vllm_text
+
+      html += f"""            <tr>
+                <td class="index-col">{index}</td>
+                <td class="speaker-col">{speaker}</td>
+                <td class="transcript-col">{triton_formatted}</td>
+                <td class="transcript-col">{vllm_formatted}</td>
+            </tr>
+"""
+
+    html += """        </tbody>
+    </table>
+</body>
+</html>"""
+
+    # Write to file
+    with open(self.output_path, 'w', encoding='utf-8') as f:
+      f.write(html)
 
 def main(config_file="config.yaml"):
   try:
