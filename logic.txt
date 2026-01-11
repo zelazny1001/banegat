@@ -583,7 +583,7 @@ class HTMLReportWriter:
           vertical-align: middle;
         }}
         td {{
-            padding: 12px;
+            padding: 2px;
             border: 1px dotted #ddd;
         }}
         tr:nth-child(even) {{
@@ -597,6 +597,12 @@ class HTMLReportWriter:
             text-align: center;
             font-weight: 600;
             color: #666;
+        }}
+        .session-col {{
+            width: 80px;
+            font-weight: 600;
+            color: #333;
+            text-align: center;
         }}
         .speaker-col {{
             width: 40px;
@@ -625,6 +631,7 @@ class HTMLReportWriter:
             <thead>
                 <tr>
                     <th class="index-col">Index</th>
+                    <th class="session-col">Session ID</th>
                     <th class="speaker-col">Speaker</th>
                     <th class="transcript-col">Triton Transcript (Reference GT)</th>
                     <th class="transcript-col">vLLM Transcript (Relative to Triton)</th>
@@ -636,6 +643,7 @@ class HTMLReportWriter:
     # Add data rows
     for _, row in self.df.iterrows():
       index = row['index']
+      session_id = row['session_id']
       speaker = row['Triton_Speaker'] or row['Vllm_Speaker'] or 'Unknown'
       triton_text = row['Triton_Transcript'] or ''
       vllm_text = row['Vllm_Transcript'] or ''
@@ -649,6 +657,7 @@ class HTMLReportWriter:
 
       html += f"""            <tr>
                 <td class="index-col">{index}</td>
+                <td class="session-col">{session_id}</td>
                 <td class="speaker-col">{speaker}</td>
                 <td class="transcript-col">{triton_formatted}</td>
                 <td class="transcript-col">{vllm_formatted}</td>
@@ -677,3 +686,116 @@ def main(config_file="config.yaml"):
 
 if __name__ == "__main__":
   main("config.yaml")
+  
+#================================================== combiner =============================
+
+"""
+Excel Workbook Consolidator Module
+Consolidates worksheets from multiple Excel files into a single output file.
+"""
+
+import os
+from pathlib import Path
+from typing import List
+import yaml
+from openpyxl import load_workbook, Workbook
+
+class ExcelConsolidator:
+  """Consolidates worksheets from multiple Excel workbooks into a single workbook."""
+
+  def __init__(self, config_path: str):
+    """
+    Initialize the consolidator with configuration from a YAML file.
+
+    Args:
+        config_path: Path to the configuration YAML file
+    """
+    with open(config_path, 'r') as f:
+      self.config = yaml.safe_load(f)
+
+    # Load configuration
+    self.input_directory = Path(self.config['input_directory'])
+    self.output_directory = Path(self.config['output_directory'])
+    self.input_workbooks = self.config['input_workbooks']
+    self.output_file = self.config['output_consolidated_file']
+
+  def consolidate_workbooks(self) -> None:
+    """
+    Main method to consolidate all workbooks into a single output file.
+
+    Reads each input workbook, copies all worksheets to the output workbook,
+    and saves the result to the specified output location.
+    """
+    # Create output workbook
+    output_path = self.output_directory / self.output_file
+    output_wb = Workbook()
+
+    # Remove default sheet created by openpyxl
+    default_sheet = output_wb.active
+    output_wb.remove(default_sheet)
+
+    # Process each input workbook
+    for workbook_name in self.input_workbooks:
+      input_path = self.input_directory / workbook_name
+      if input_path.exists():
+        self._copy_worksheets(input_path, output_wb)
+        print(f"Processed: {workbook_name}")
+      else:
+        print(f"Warning: File not found - {input_path}")
+
+    # Ensure output directory exists and save
+    self.output_directory.mkdir(parents=True, exist_ok=True)
+    output_wb.save(output_path)
+    print(f"\nConsolidation complete!")
+    print(f"Output saved to: {output_path}")
+
+  def _copy_worksheets(self, input_path: Path, output_wb: Workbook) -> None:
+    """
+    Copy all worksheets from an input workbook to the output workbook.
+
+    Args:
+        input_path: Path to the input workbook
+        output_wb: Destination workbook object
+    """
+    # Load input workbook
+    input_wb = load_workbook(input_path, read_only=False)
+
+    # Copy each worksheet
+    for sheet_name in input_wb.sheetnames:
+      # Create new sheet in output workbook
+      new_sheet = output_wb.create_sheet(title=sheet_name)
+
+      # Copy cell values from source to destination
+      source_sheet = input_wb[sheet_name]
+      for row in source_sheet.iter_rows(values_only=True):
+        new_sheet.append(row)
+
+    # Close input workbook
+    input_wb.close()
+
+def main(config_yaml: str) -> None:
+  """
+  Orchestrates the consolidation process.
+
+  This is the main entry point for the module that matches the requirement:
+  "orchestrates functionality using: main(config.yaml)"
+
+  Args:
+      config_yaml: Path to the configuration YAML file
+  """
+  consolidator = ExcelConsolidator(config_yaml)
+  consolidator.consolidate_workbooks()
+
+if __name__ == "__main__":
+  main("config.yaml")
+  
+================================= combiner config.yaml
+
+# config.yaml
+input_directory: "."
+input_workbooks:
+  - "workbook1.xlsx"
+  - "workbook2.xlsx"
+  - "workbook1.xlsx"
+output_directory: "."
+output_consolidated_file: "combined.xlsx"
