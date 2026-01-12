@@ -1,426 +1,3 @@
-# comparer.py
-
-import os
-import sys
-import re
-import string
-import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.workbook import Workbook
-from openpyxl.styles import Font, Alignment
-from openpyxl.utils import get_column_letter
-import yaml
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-class Config:
-  """Configuration loader"""
-
-  def __init__(self, config_path: str):
-    with open(config_path, 'r') as f:
-      self.config = yaml.safe_load(f)
-
-  @property
-  def input_directory(self) -> str:
-    return self.config['input_directory']
-
-  @property
-  def input_filename(self) -> str:
-    return self.config['input_filename']
-
-  @property
-  def output_directory(self) -> str:
-    return self.config['output_directory']
-
-  @property
-  def output_filename(self) -> str:
-    return self.config['output_filename']
-
-  @property
-  def column_widths(self) -> dict:
-    return self.config.get('column_widths', {})
-
-class TranscriptNormalizer:
-  """Handles text normalization and comparison"""
-
-  @staticmethod
-  def normalize(text: str) -> List[str]:
-    """Normalize text using the nltk_jiwer_utils library's normalize_string"""
-    if not isinstance(text, str):
-      return []
-
-    # Use the normalize_string function from nltk_jiwer_utils
-    from nltk_jiwer_utils import normalize_string
-    return normalize_string(text)
-
-  @staticmethod
-  def delta_and_ops(left: str, right: str) -> Tuple[int, int, int, int]:
-    """Calculate difference between two transcripts using jiwer for proper alignment"""
-    from nltk_jiwer_utils import get_jiwer_result
-
-    # Get jiwer result which properly aligns the transcripts
-    result = get_jiwer_result(left, right)
-
-    # Extract S, D, I from jiwer result
-    substitutions = result.get("substitutions", 0)
-    deletions = result.get("deletions", 0)
-    insertions = result.get("insertions", 0)
-
-    # Delta is total differences (S + D + I)
-    delta = substitutions + deletions + insertions
-
-    return delta, substitutions, deletions, insertions
-
-  @staticmethod
-  def delta(left: str, right: str) -> int:
-    """Calculate difference between two transcripts (backward compatibility)"""
-    differences, _, _, _ = TranscriptNormalizer.delta_and_ops(left, right)
-    return differences
-
-class WorkbookReader:
-  """Reads and parses input Excel workbook"""
-
-  REQUIRED_COLUMNS = ["speaker", "SeqNumRange", "SeqNum", "Transcript"]
-
-  def __init__(self, input_path: str):
-    self.input_path = input_path
-
-  def load_sessions(self) -> Dict[str, Dict[str, pd.DataFrame]]:
-    """Load all sessions from workbook"""
-    wb = load_workbook(self.input_path, read_only=True, data_only=True)
-    sessions = {}
-
-    for sheet_name in wb.sheetnames:
-      # Parse sheet name format: "Environment - SessionName"
-      if ' - ' in sheet_name:
-        environment, session_id = [part.strip() for part in sheet_name.split(' - ', 1)]
-
-        # Only process Triton and Vllm sheets
-        if environment.lower() not in ['triton', 'vllm']:
-          continue
-
-        # Initialize session if not exists
-        if session_id not in sessions:
-          sessions[session_id] = {}
-
-        # Read sheet data
-        df = pd.read_excel(
-          self.input_path,
-          sheet_name=sheet_name,
-          engine='openpyxl'
-        )
-
-        # Select required columns
-        # Find columns that match our required columns (case-insensitive)
-        available_cols = {col.lower(): col for col in df.columns}
-        selected_data = {}
-
-        for req_col in self.REQUIRED_COLUMNS:
-          if req_col.lower() in available_cols:
-            actual_col = available_cols[req_col.lower()]
-            selected_data[req_col] = df[actual_col]
-          else:
-            # If column not found, create empty series
-            selected_data[req_col] = pd.Series([None] * len(df))
-
-        result_df = pd.DataFrame(selected_data)
-
-        # Store in sessions dictionary
-        sessions[session_id][environment.lower()] = result_df
-
-    wb.close()
-    return sessions
-
-class EnvironmentComparer:
-  """Compares Triton and Vllm environments"""
-
-  def __init__(self, sessions: Dict[str, Dict[str, pd.DataFrame]]):
-    self.sessions = sessions
-
-  def build_output(self) -> pd.DataFrame:
-    """Build comparison output DataFrame"""
-    all_rows = []
-
-    for session_id, envs in self.sessions.items():
-      triton_df = envs.get('triton')
-      vllm_df = envs.get('vllm')
-
-      # Skip if either environment is missing
-      if triton_df is None or vllm_df is None:
-        print(f"Warning: Session '{session_id}' missing one environment")
-        continue
-
-      # Create lookup dictionaries for quick matching
-      triton_dict = {}
-      for idx, row in triton_df.iterrows():
-        key = (row['speaker'], row['SeqNum'])
-        triton_dict[key] = {
-          'index': idx,
-          'SeqNumRange': row['SeqNumRange'],
-          'Transcript': row['Transcript']
-        }
-
-      vllm_dict = {}
-      for idx, row in vllm_df.iterrows():
-        key = (row['speaker'], row['SeqNum'])
-        vllm_dict[key] = {
-          'index': idx,
-          'SeqNumRange': row['SeqNumRange'],
-          'Transcript': row['Transcript']
-        }
-
-      # Get all unique keys from both environments
-      all_keys = set(triton_dict.keys()) | set(vllm_dict.keys())
-
-      # Sort keys: agent0 first, then customer0, then others
-      def sort_key(x):
-        speaker, seq_num = x
-        # Sort by speaker (agent0 before customer0), then by SeqNum
-        return (0 if speaker == 'agent0' else 1 if speaker == 'customer0' else 2, seq_num)
-
-      sorted_keys = sorted(all_keys, key=sort_key)
-
-      # Process each matched pair
-      for key_idx, key in enumerate(sorted_keys, start=1):
-        speaker, seq_num = key
-
-        triton_data = triton_dict.get(key)
-        vllm_data = vllm_dict.get(key)
-
-        # Calculate delta and S, D, I values
-        if triton_data and vllm_data:
-          delta, substitutions, deletions, insertions = TranscriptNormalizer.delta_and_ops(
-            triton_data['Transcript'],
-            vllm_data['Transcript']
-          )
-          # Get WER from jiwer result
-          from nltk_jiwer_utils import get_jiwer_result
-          result = get_jiwer_result(triton_data['Transcript'], vllm_data['Transcript'])
-          wer = result.get("wer", 0.0)
-        elif triton_data:
-          delta, substitutions, deletions, insertions = TranscriptNormalizer.delta_and_ops(
-            triton_data['Transcript'], ""
-          )
-          from nltk_jiwer_utils import get_jiwer_result
-          result = get_jiwer_result(triton_data['Transcript'], "")
-          wer = result.get("wer", 0.0)
-        elif vllm_data:
-          delta, substitutions, deletions, insertions = TranscriptNormalizer.delta_and_ops(
-            "", vllm_data['Transcript']
-          )
-          wer = 0.0  # No reference transcript
-        else:
-          delta = substitutions = deletions = insertions = 0
-          wer = 0.0
-
-        # Build row with original column names (keeping prefixes)
-        row = {
-          'index': len(all_rows) + 1,
-          'session_id': session_id,
-          'Triton_SeqNum': seq_num if triton_data else None,
-          'Triton_SeqNumRange': triton_data['SeqNumRange'] if triton_data else None,
-          'Triton_Speaker': speaker if triton_data else None,
-          'Triton_Transcript': triton_data['Transcript'] if triton_data else None,
-          'Vllm_SeqNum': seq_num if vllm_data else None,
-          'Vllm_SeqNumRange': vllm_data['SeqNumRange'] if vllm_data else None,
-          'Vllm_Speaker': speaker if vllm_data else None,
-          'Vllm_Transcript': vllm_data['Transcript'] if vllm_data else None,
-          'Delta': delta,
-          'S': substitutions,
-          'D': deletions,
-          'I': insertions,
-          'WER': wer
-        }
-
-        all_rows.append(row)
-
-    # Create DataFrame with original column names
-    columns = [
-      'index', 'session_id',
-      'Triton_SeqNum', 'Triton_SeqNumRange', 'Triton_Speaker', 'Triton_Transcript',
-      'Vllm_SeqNum', 'Vllm_SeqNumRange', 'Vllm_Speaker', 'Vllm_Transcript',
-      'Delta', 'S', 'D', 'I', 'WER'
-    ]
-
-    return pd.DataFrame(all_rows, columns=columns)
-
-class WorkbookWriter:
-  """Writes output to Excel workbook with formatting"""
-
-  def __init__(self, df: pd.DataFrame, output_path: str, column_widths: dict):
-    self.df = df
-    self.output_path = output_path
-    self.column_widths = column_widths
-
-  def write(self):
-    """Write DataFrame to Excel with formatting"""
-    # Create output directory if it doesn't exist
-    output_dir = os.path.dirname(self.output_path)
-    if output_dir:
-      os.makedirs(output_dir, exist_ok=True)
-
-    # Create a new workbook
-    wb = Workbook()
-    ws = wb.active
-    ws.title = 'Comparison'
-
-    # STEP 1: Set all values BEFORE any merging
-    # Set row 1 header values (these will be the top-left of merged cells)
-    # Leave A1 and B1 empty (for index and session_id columns)
-    ws['C1'].value = "Triton"
-    ws['G1'].value = "Vllm"
-    ws['K1'].value = "WER"
-
-    # Write headers in row 2
-    display_headers = [
-      'index', 'session_id',
-      'SeqNum', 'SeqNumRange', 'Speaker', 'Transcript',  # Triton
-      'SeqNum', 'SeqNumRange', 'Speaker', 'Transcript',  # Vllm
-      'Delta', 'S', 'D', 'I', 'WER%'
-    ]
-
-    for col_idx, header in enumerate(display_headers, start=1):
-      ws.cell(row=2, column=col_idx, value=header)
-
-    # Write data starting from row 3
-    row_idx = 3
-    for _, df_row in self.df.iterrows():
-      ws.cell(row=row_idx, column=1, value=df_row['index'])
-      ws.cell(row=row_idx, column=2, value=df_row['session_id'])
-      ws.cell(row=row_idx, column=3, value=df_row['Triton_SeqNum'])
-      ws.cell(row=row_idx, column=4, value=df_row['Triton_SeqNumRange'])
-      ws.cell(row=row_idx, column=5, value=df_row['Triton_Speaker'])
-      ws.cell(row=row_idx, column=6, value=df_row['Triton_Transcript'])
-      ws.cell(row=row_idx, column=7, value=df_row['Vllm_SeqNum'])
-      ws.cell(row=row_idx, column=8, value=df_row['Vllm_SeqNumRange'])
-      ws.cell(row=row_idx, column=9, value=df_row['Vllm_Speaker'])
-      ws.cell(row=row_idx, column=10, value=df_row['Vllm_Transcript'])
-      ws.cell(row=row_idx, column=11, value=df_row['Delta'])
-      ws.cell(row=row_idx, column=12, value=df_row['S'])
-      ws.cell(row=row_idx, column=13, value=df_row['D'])
-      ws.cell(row=row_idx, column=14, value=df_row['I'])
-      ws.cell(row=row_idx, column=15, value=df_row['WER'])
-      row_idx += 1
-
-    # STEP 2: Apply formatting BEFORE merging
-    aptos_font_bold = Font(name='Aptos', size=9, bold=True)
-    aptos_font = Font(name='Aptos', size=9)
-    center_alignment = Alignment(horizontal='center', vertical='center')
-
-    # Format row 1 cells (before merging)
-    for col in range(1, 16):  # Columns A-O (added column 15 for WER)
-      cell = ws.cell(row=1, column=col)
-      cell.font = aptos_font_bold
-      cell.alignment = center_alignment
-
-    # Format row 2 headers
-    for col in range(1, 16):
-      cell = ws.cell(row=2, column=col)
-      cell.font = aptos_font_bold
-
-    # Format data rows
-    for row in range(3, row_idx):
-      for col in range(1, 16):
-        ws.cell(row=row, column=col).font = aptos_font
-
-    # STEP 3: NOW do the merging (after all values and formatting are set)
-    # Only merge Triton and Vllm sections in row 1
-    ws.merge_cells('C1:F1')
-    ws['C1'].alignment = center_alignment  # Center the "Triton" label
-    ws['C1'].font = aptos_font_bold  # Re-apply bold font after merge
-
-    ws.merge_cells('G1:J1')
-    ws['G1'].alignment = center_alignment  # Center the "Vllm" label
-    ws['G1'].font = aptos_font_bold  # Re-apply bold font after merge
-
-    ws.merge_cells('K1:O1')  # Extended to include WER column (column 15)
-    ws['K1'].alignment = center_alignment  # Center the "WER" label
-    ws['K1'].font = aptos_font_bold  # Re-apply bold font after merge
-
-    # Apply column widths
-    # Map each column to its appropriate width from config
-    column_width_map = {
-      1: self.column_widths.get('index', 8),
-      2: self.column_widths.get('session_id', 20),
-      3: self.column_widths.get('Triton_SeqNum', 10),
-      4: self.column_widths.get('Triton_SeqNumRange', 15),
-      5: self.column_widths.get('Triton_Speaker', 12),
-      6: self.column_widths.get('Triton_Transcript', 50),
-      7: self.column_widths.get('Vllm_SeqNum', 10),
-      8: self.column_widths.get('Vllm_SeqNumRange', 15),
-      9: self.column_widths.get('Vllm_Speaker', 12),
-      10: self.column_widths.get('Vllm_Transcript', 50),
-      11: self.column_widths.get('Delta', 10),
-      12: self.column_widths.get('S', 8),
-      13: self.column_widths.get('D', 8),
-      14: self.column_widths.get('I', 8),
-      15: self.column_widths.get('WER', 10)
-    }
-
-    for col_idx, width in column_width_map.items():
-      col_letter = get_column_letter(col_idx)
-      ws.column_dimensions[col_letter].width = width
-
-    # Freeze panes (top 2 rows)
-    ws.freeze_panes = 'A3'
-
-    # Add filter to headers
-    ws.auto_filter.ref = f"A2:{get_column_letter(len(display_headers))}2"
-
-    # Save the workbook
-    wb.save(self.output_path)
-
-class CompareEnvironmentsApp:
-  """Main application controller"""
-
-  def __init__(self, config_path: str):
-    self.config = Config(config_path)
-
-  def run(self):
-    """Run the complete comparison workflow"""
-    # Build paths
-    input_path = os.path.join(
-      self.config.input_directory,
-      self.config.input_filename
-    )
-
-    output_path = os.path.join(
-      self.config.output_directory,
-      self.config.output_filename
-    )
-
-    # Create HTML output path (same name but .html extension)
-    html_output_path = os.path.join(
-      self.config.output_directory,
-      self.config.output_filename.replace('.xlsx', '.html')
-    )
-
-    # Read input
-    print(f"Reading input from: {input_path}")
-    reader = WorkbookReader(input_path)
-    sessions = reader.load_sessions()
-
-    print(f"Found {len(sessions)} session(s)")
-
-    # Compare environments
-    print("Comparing environments...")
-    comparer = EnvironmentComparer(sessions)
-    result_df = comparer.build_output()
-
-    print(f"Generated {len(result_df)} comparison rows")
-
-    # Write Excel output
-    print(f"Writing Excel output to: {output_path}")
-    writer = WorkbookWriter(result_df, output_path, self.config.column_widths)
-    writer.write()
-
-    # Write HTML output
-    print(f"Writing HTML output to: {html_output_path}")
-    html_writer = HTMLReportWriter(result_df, html_output_path)
-    html_writer.write()
-
-    print("Done!")
-
 class HTMLReportWriter:
   """Writes HTML report with color-coded transcripts"""
 
@@ -498,76 +75,76 @@ class HTMLReportWriter:
 
   def write(self):
     """Write HTML report"""
-    html = f"""<!DOCTYPE html>
+    html = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Transcript Comparison - Triton vs Vllm</title>
     <style>
-        body {{
+        body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             font-size: 10px;
             margin: 0;
             padding: 0;
             background-color: #f5f5f5;
-        }}
-        .header {{
+        }
+        .header {
             position: sticky;
             top: 0;
             background-color: #f5f5f5;
             z-index: 100;
             padding: 20px 20px 10px 20px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .content {{
+        }
+        .content {
             padding: 0 20px 20px 20px;
-        }}
-        h1 {{
+        }
+        h1 {
             color: #333;
             text-align: center;
             margin: 0 0 10px 0;
-        }}
-        .legend {{
+        }
+        .legend {
             text-align: center;
             margin-bottom: 10px;
             padding: 10px;
             background-color: white;
             border-radius: 5px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }}
-        .legend span {{
+        }
+        .legend span {
             margin: 0 15px;
             font-size: 14px;
-        }}
-        .legend .sample-correct {{
+        }
+        .legend .sample-correct {
             color: #808080;
-        }}
-        .legend .sample-substitute {{
+        }
+        .legend .sample-substitute {
             color: #000;
             background-color: #FF8C00;
             padding: 2px 6px;
             border-radius: 3px;
-        }}
-        .legend .sample-delete {{
+        }
+        .legend .sample-delete {
             color: #fff;
             background-color: #DC143C;
             padding: 2px 6px;
             border-radius: 3px;
-        }}
-        .legend .sample-insert {{
+        }
+        .legend .sample-insert {
             color: #fff;
             background-color: #1E90FF;
             padding: 2px 6px;
             border-radius: 3px;
-        }}
-        table {{
+        }
+        table {
             width: 100%;
             border-collapse: collapse;
             background-color: white;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }}
-        th {{
+        }
+        th {
             background-color: #4CAF50;
             color: white;
             padding: 12px;
@@ -577,41 +154,49 @@ class HTMLReportWriter:
             position: sticky;
             top: 120px;
             z-index: 10;
-        }}
-        tr, td {{
+        }
+        tr, td {
           line-height: 0.5;
           vertical-align: middle;
-        }}
-        td {{
+        }
+        td {
             padding: 2px;
             border: 1px dotted #ddd;
-        }}
-        tr:nth-child(even) {{
+        }
+        tr:nth-child(even) {
             background-color: #f9f9f9;
-        }}
-        tr:hover {{
+        }
+        tr:hover {
             background-color: #f0f0f0;
-        }}
-        .index-col {{
+        }
+        .index-col {
             width: 10px;
             text-align: center;
             font-weight: 600;
             color: #666;
-        }}
-        .session-col {{
+        }
+        .session-col {
             width: 80px;
             font-weight: 600;
             color: #333;
             text-align: center;
-        }}
-        .speaker-col {{
+        }
+        .speaker-col {
             width: 40px;
             font-weight: 600;
             color: #333;
-        }}
-        .transcript-col {{
+        }
+        .seqrange-col {
+            width: 60px;
+            text-align: center;
+            font-size: 9px;
+        }
+        .seqrange-mismatch {
+            background-color: #FFFF99;
+        }
+        .transcript-col {
             line-height: 1.6;
-        }}
+        }
     </style>
 </head>
 <body>
@@ -634,6 +219,8 @@ class HTMLReportWriter:
                     <th class="session-col">Session ID</th>
                     <th class="speaker-col">Speaker</th>
                     <th class="transcript-col">Triton Transcript (Reference GT)</th>
+                    <th class="seqrange-col">SeqRT</th>
+                    <th class="seqrange-col">SeqRV</th>
                     <th class="transcript-col">vLLM Transcript (Relative to Triton)</th>
                 </tr>
             </thead>
@@ -648,6 +235,14 @@ class HTMLReportWriter:
       triton_text = row['Triton_Transcript'] or ''
       vllm_text = row['Vllm_Transcript'] or ''
 
+      # Get SeqNumRange values
+      triton_seqrange = str(row['Triton_SeqNumRange']) if pd.notna(row['Triton_SeqNumRange']) else ''
+      vllm_seqrange = str(row['Vllm_SeqNumRange']) if pd.notna(row['Vllm_SeqNumRange']) else ''
+
+      # Check if SeqNumRanges are different
+      seqrange_mismatch = triton_seqrange != vllm_seqrange
+      seqrange_class = 'seqrange-col seqrange-mismatch' if seqrange_mismatch else 'seqrange-col'
+
       # Get word alignments
       ref_tagged, hyp_tagged = self.get_word_alignments(triton_text, vllm_text)
 
@@ -660,6 +255,8 @@ class HTMLReportWriter:
                 <td class="session-col">{session_id}</td>
                 <td class="speaker-col">{speaker}</td>
                 <td class="transcript-col">{triton_formatted}</td>
+                <td class="{seqrange_class}">{triton_seqrange}</td>
+                <td class="{seqrange_class}">{vllm_seqrange}</td>
                 <td class="transcript-col">{vllm_formatted}</td>
             </tr>
 """
@@ -673,129 +270,3 @@ class HTMLReportWriter:
     # Write to file
     with open(self.output_path, 'w', encoding='utf-8') as f:
       f.write(html)
-
-def main(config_file="config.yaml"):
-  try:
-    # Run the application
-    app = CompareEnvironmentsApp(config_file)
-    app.run()
-    print("Comparison completed successfully!")
-  except Exception as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-
-if __name__ == "__main__":
-  main("config.yaml")
-  
-#================================================== combiner =============================
-
-"""
-Excel Workbook Consolidator Module
-Consolidates worksheets from multiple Excel files into a single output file.
-"""
-
-import os
-from pathlib import Path
-from typing import List
-import yaml
-from openpyxl import load_workbook, Workbook
-
-class ExcelConsolidator:
-  """Consolidates worksheets from multiple Excel workbooks into a single workbook."""
-
-  def __init__(self, config_path: str):
-    """
-    Initialize the consolidator with configuration from a YAML file.
-
-    Args:
-        config_path: Path to the configuration YAML file
-    """
-    with open(config_path, 'r') as f:
-      self.config = yaml.safe_load(f)
-
-    # Load configuration
-    self.input_directory = Path(self.config['input_directory'])
-    self.output_directory = Path(self.config['output_directory'])
-    self.input_workbooks = self.config['input_workbooks']
-    self.output_file = self.config['output_consolidated_file']
-
-  def consolidate_workbooks(self) -> None:
-    """
-    Main method to consolidate all workbooks into a single output file.
-
-    Reads each input workbook, copies all worksheets to the output workbook,
-    and saves the result to the specified output location.
-    """
-    # Create output workbook
-    output_path = self.output_directory / self.output_file
-    output_wb = Workbook()
-
-    # Remove default sheet created by openpyxl
-    default_sheet = output_wb.active
-    output_wb.remove(default_sheet)
-
-    # Process each input workbook
-    for workbook_name in self.input_workbooks:
-      input_path = self.input_directory / workbook_name
-      if input_path.exists():
-        self._copy_worksheets(input_path, output_wb)
-        print(f"Processed: {workbook_name}")
-      else:
-        print(f"Warning: File not found - {input_path}")
-
-    # Ensure output directory exists and save
-    self.output_directory.mkdir(parents=True, exist_ok=True)
-    output_wb.save(output_path)
-    print(f"\nConsolidation complete!")
-    print(f"Output saved to: {output_path}")
-
-  def _copy_worksheets(self, input_path: Path, output_wb: Workbook) -> None:
-    """
-    Copy all worksheets from an input workbook to the output workbook.
-
-    Args:
-        input_path: Path to the input workbook
-        output_wb: Destination workbook object
-    """
-    # Load input workbook
-    input_wb = load_workbook(input_path, read_only=False)
-
-    # Copy each worksheet
-    for sheet_name in input_wb.sheetnames:
-      # Create new sheet in output workbook
-      new_sheet = output_wb.create_sheet(title=sheet_name)
-
-      # Copy cell values from source to destination
-      source_sheet = input_wb[sheet_name]
-      for row in source_sheet.iter_rows(values_only=True):
-        new_sheet.append(row)
-
-    # Close input workbook
-    input_wb.close()
-
-def main(config_yaml: str) -> None:
-  """
-  Orchestrates the consolidation process.
-
-  This is the main entry point for the module that matches the requirement:
-  "orchestrates functionality using: main(config.yaml)"
-
-  Args:
-      config_yaml: Path to the configuration YAML file
-  """
-  consolidator = ExcelConsolidator(config_yaml)
-  consolidator.consolidate_workbooks()
-
-if __name__ == "__main__":
-  main("config.yaml")
-  
-================================= combiner config.yaml
-
-# config.yaml
-input_directory: "."
-input_workbooks:
-  - "workbook1.xlsx"
-  - "workbook2.xlsx"
-  - "workbook1.xlsx"
-output_directory: "."
-output_consolidated_file: "combined.xlsx"
