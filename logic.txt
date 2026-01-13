@@ -1024,3 +1024,242 @@ def main(config_file="config.yaml"):
 
 if __name__ == "__main__":
   main("config.yaml")
+  
+  
+# ======================================== ********************* ================================
+
+import ast
+import csv
+import io
+import sys
+import token
+import tokenize
+import yaml
+from pathlib import Path
+
+
+class ScopeTracker(ast.NodeVisitor):
+    def __init__(self):
+        self.scopes = {}  # line -> (class, method, function)
+
+    def visit_ClassDef(self, node):
+        for n in ast.walk(node):
+            if hasattr(n, "lineno"):
+                self.scopes[n.lineno] = (node.name, None, None)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node):
+        parent = self._current_class(node)
+        for n in ast.walk(node):
+            if hasattr(n, "lineno"):
+                if parent:
+                    self.scopes[n.lineno] = (parent, node.name, None)
+                else:
+                    self.scopes[n.lineno] = (None, None, node.name)
+        self.generic_visit(node)
+
+    def _current_class(self, node):
+        while hasattr(node, "parent"):
+            node = node.parent
+            if isinstance(node, ast.ClassDef):
+                return node.name
+        return None
+
+
+def attach_parents(tree):
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            child.parent = node
+
+def SORT_OF_WORKING_collapse_blank_lines_in_blocks(source: str) -> str:
+    """
+    Remove ALL blank lines inside indented blocks.
+    Preserve top-level blank lines.
+    """
+    lines = source.splitlines()
+    result = []
+
+    # Stack to track indentation levels
+    indent_stack = [0]
+
+    for i, line in enumerate(lines):
+      stripped = line.strip()
+
+      if stripped:  # Non-blank line
+        # Calculate indentation
+        indent = len(line) - len(line.lstrip())
+
+        # Update indent stack
+        if indent > indent_stack[-1]:
+          # Entering a new block
+          indent_stack.append(indent)
+        elif indent < indent_stack[-1]:
+          # Exiting one or more blocks
+          while indent_stack and indent < indent_stack[-1]:
+            indent_stack.pop()
+          if not indent_stack:
+            indent_stack.append(0)
+
+        result.append(line)
+      else:  # Blank line
+        # Check if we're in any block (not at top level)
+        if indent_stack[-1] > 0:
+          # Skip blank lines inside blocks
+          continue
+        else:
+          # Keep top-level blank lines
+          result.append(line)
+
+    return "\n".join(result)
+
+def collapse_blank_lines_in_blocks(source: str) -> str:
+  """
+  Remove ALL blank lines inside indented blocks.
+  Preserve top-level blank lines.
+  """
+  lines = source.splitlines()
+  result = []
+
+  # Stack to track indentation levels
+  indent_stack = [0]
+
+  for i, line in enumerate(lines):
+    # Check if line is "blank" (empty or only whitespace)
+    is_blank = len(line.strip()) == 0
+
+    if not is_blank:  # Non-blank line
+      # Calculate indentation
+      indent = len(line) - len(line.lstrip())
+
+      # Update indent stack
+      if indent > indent_stack[-1]:
+        # Entering a new block
+        indent_stack.append(indent)
+      elif indent < indent_stack[-1]:
+        # Exiting one or more blocks
+        while indent_stack and indent < indent_stack[-1]:
+          indent_stack.pop()
+        if not indent_stack:
+          indent_stack.append(0)
+
+      # Add the line (preserve trailing spaces if they exist in original)
+      result.append(line.rstrip())
+    else:  # Blank line (empty or only whitespace)
+      # Check if we're in any block (not at top level)
+      if indent_stack[-1] > 0:
+        # Skip blank lines inside blocks
+        continue
+      else:
+        # Keep top-level blank lines as empty lines
+        result.append("")
+
+  return "\n".join(result)
+
+def strip_and_collect(path: Path, in_place=False):
+    source = path.read_text(encoding="utf-8")
+
+    tree = ast.parse(source)
+    attach_parents(tree)
+
+    tracker = ScopeTracker()
+    tracker.visit(tree)
+
+    comments = []
+    output = []
+
+    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+
+    prev_toktype = token.INDENT
+    first_token = True
+    last_lineno = 1
+    last_col = 0
+
+    for tok in tokens:
+        tok_type, tok_string, (sline, scol), (eline, ecol), line_text = tok
+
+        # spacing
+        if sline > last_lineno:
+            output.append("\n" * (sline - last_lineno))
+            last_col = 0
+        if scol > last_col:
+            output.append(" " * (scol - last_col))
+
+        scope = tracker.scopes.get(sline, (None, None, None))
+        cls, method, func = scope
+
+        # comment
+        if tok_type == tokenize.COMMENT:
+            inline = line_text.strip().startswith("#") is False
+            comments.append({
+                "comment": tok_string.lstrip("#").strip(),
+                "inline": inline,
+                "docstring": False,
+                "class": cls or "None",
+                "method": method or "None",
+                "function": func or "None",
+            })
+
+        # docstring
+        elif (
+            tok_type == tokenize.STRING
+            and (first_token or prev_toktype == token.INDENT)
+        ):
+            comments.append({
+                "comment": " ".join(tok_string.strip('"""\'').splitlines()).strip(),
+                "inline": False,
+                "docstring": True,
+                "class": cls or "None",
+                "method": method or "None",
+                "function": func or "None",
+            })
+
+        else:
+            output.append(tok_string)
+
+        first_token = False
+        prev_toktype = tok_type
+        last_lineno = eline
+        last_col = ecol
+
+    # write stripped code
+    stripped_code = "".join(output)
+    stripped_code = collapse_blank_lines_in_blocks(stripped_code)
+
+    if in_place:
+        path.write_text(stripped_code, encoding="utf-8")
+
+    # write CSV
+    csv_path = path.with_name(path.stem + "-comments.csv")
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["comment", "inline", "docstring", "class", "method", "function"],
+        )
+        writer.writeheader()
+        writer.writerows(comments)
+
+def load_target_from_config() -> Path:
+  """
+  Load target Python file path from strip_config.yaml,
+  which must live in the same directory as this script.
+  """
+  config_path = Path(__file__).parent / "strip_config.yaml"
+
+  if not config_path.exists():
+    raise FileNotFoundError(f"Missing config file: {config_path}")
+
+  with config_path.open("r", encoding="utf-8") as f:
+    config = yaml.safe_load(f)
+
+  try:
+    return Path(config["target_file"])
+  except KeyError:
+    raise KeyError("strip_config.yaml must contain 'target_file'")
+
+if __name__ == "__main__":
+    file_path = load_target_from_config()
+    strip_and_collect(file_path, in_place=True)
+	
+# ======================================================= strip_config.yaml
+
+target_file: /sheet-logic/compare_env/comparer.py
