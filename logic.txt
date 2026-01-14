@@ -110,3 +110,10 @@ def main():
 
 if __name__ == "__main__":
   main()
+  
+# ===================
+
+input_directory: "j:/projects/sheet-logic/more_on_oop"
+output_directory: "j:/projects/sheet-logic"
+combined_filepath: "j:/projects/sheet-logic/combined.txt"
+action: "combine"
