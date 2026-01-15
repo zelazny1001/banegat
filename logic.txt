@@ -1,1 +1,518 @@
-\
+# metrics_calculator.py
+
+from __future__ import annotations
+import os
+import re
+import random
+import requests
+from typing import Tuple
+from data_models import TranscriptPair, MetricsRow
+from constants import (CODE_IS_BEING_TESTED,
+                       WER_POST_ENDPOINT,
+                       COMPUTE_WER_LOCAL,
+                       WER_ALGORITHM,
+                       NUMBER_OF_SECTIONS,
+                       TOXIC_WORKBOOK_PATH)
+from nltk_jiwer_utils import get_nltk_result
+
+class TextPreprocessor:
+  @staticmethod
+  def preprocess(text: str) -> str:
+    if not text:
+      return ""
+    lowered = str(text).lower()
+    lowered = re.sub(r"[.,\-?â€¦]", " ", lowered)
+    lowered = re.sub(r"\{[^}]*\}", "", lowered)
+    lowered = re.sub(r"[\[\]]", "", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()
+
+class WERCalculator:
+  def __init__(self, endpoint: str):
+    self.endpoint = endpoint
+    self.preprocessor = TextPreprocessor()
+    self.cached_result = None
+    print(f"WERCalculator started ...")
+
+  def calculate(self, ground_truth: str, transcript: str) -> Tuple[float, int, int]:
+    if CODE_IS_BEING_TESTED:
+      return round(random.uniform(40, 90), 4), len(ground_truth.split()), len(transcript.split())
+
+    if COMPUTE_WER_LOCAL:
+      if WER_ALGORITHM == "nltk":
+        self.cached_result = get_nltk_result(ground_truth, transcript)
+      else:
+        self.cached_result = get_nltk_result(ground_truth, transcript)
+
+      wer = self.cached_result["wer"]
+      references = self.cached_result["references"]
+      hypothesis = self.cached_result["hypothesis"]
+      return wer, references, hypothesis
+
+    # try:
+    #   response = requests.post(
+    #     self.endpoint,
+    #     json={"groundTruth": ground_truth, "transcript": transcript},
+    #     verify=False,
+    #     timeout=10
+    #   )
+    #   data = response.json()
+    #   return round(float(data[0]), 4), int(data[1])
+    # except Exception:
+    #   return float("nan"), None
+
+  def calculate_for_pairs(self, pairs: list[TranscriptPair]) -> Tuple[str, str, float, int]:
+    ground_truth_joined = " ".join(
+      self.preprocessor.preprocess(p.ground_truth) for p in pairs
+    )
+    transcript_joined = " ".join(
+      self.preprocessor.preprocess(p.transcript) for p in pairs
+    )
+    wer, tokens, model_tokens = self.calculate(ground_truth_joined, transcript_joined)
+    return ground_truth_joined, transcript_joined, wer, tokens
+
+class SectionSplitter:
+  @staticmethod
+  def compute_spans(total_items: int, section_count: int) -> list[tuple[int, int]]:
+    if total_items == 0 or section_count <= 0:
+      return []
+
+    base_size = total_items // section_count
+    remainder = total_items % section_count
+    spans: list[tuple[int, int]] = []
+    start = 0
+
+    for i in range(1, section_count + 1):
+      size = base_size + (1 if i <= remainder else 0)
+      if size == 0:
+        break
+      end = start + size
+      spans.append((start, end))
+      start = end
+
+    return spans
+
+class MetricsCalculator:
+  def OLD__init__(self):
+    self.wer_calculator = WERCalculator(WER_POST_ENDPOINT)
+    self.section_splitter = SectionSplitter()
+
+  # === start modification for toxic columns - metrics_calculator.py
+  def __init__(self):
+    self.wer_calculator = WERCalculator(WER_POST_ENDPOINT)
+    self.section_splitter = SectionSplitter()
+    self.toxic_detector = ToxicTokenDetector(TOXIC_WORKBOOK_PATH)
+  # === end modification for toxic columns
+
+  def OLD_calculate_metrics_for_section(
+      self,
+      metadata: str,
+      session_id: str,
+      section_label: str,
+      pairs: list[TranscriptPair],
+      hallucination_counts: list[int],
+      hallucination_texts: list[str],
+      is_entire: bool = False
+  ) -> MetricsRow:
+    if not pairs:
+      return MetricsRow(
+        metadata=metadata,
+        session_id=session_id,
+        section=section_label,
+        ground_truth_text="",
+        model_text="",
+        wer=float("nan"),
+        hallucination_count=0,
+        ground_truth_tokens=0,
+        hallucination_percent=None,
+        hallucination_text="",
+        is_entire=is_entire
+      )
+
+    gt_text, model_text, wer, gt_tokens = self.wer_calculator.calculate_for_pairs(pairs)
+    hallucination_total = sum(hallucination_counts)
+    hallucination_percent = (100 * hallucination_total / gt_tokens) if gt_tokens else None
+    hallucination_text = " ".join(hallucination_texts)
+
+    return MetricsRow(
+      metadata=metadata,
+      session_id=session_id,
+      section=section_label,
+      ground_truth_text=gt_text,
+      model_text=model_text,
+      wer=wer,
+      hallucination_count=hallucination_total,
+      ground_truth_tokens=gt_tokens,
+      hallucination_percent=hallucination_percent,
+      hallucination_text=hallucination_text,
+      is_entire=is_entire
+    )
+
+  # === start modification for timestamp - metrics_calculator.py
+  def OLD_2calculate_metrics_for_section(
+      self,
+      metadata: str,
+      session_id: str,
+      section_label: str,
+      pairs: list[TranscriptPair],
+      hallucination_counts: list[int],
+      hallucination_texts: list[str],
+      is_entire: bool = False
+  ) -> MetricsRow:
+    if not pairs:
+      return MetricsRow(
+        metadata=metadata,
+        session_id=session_id,
+        section=section_label,
+        ground_truth_text="",
+        model_text="",
+        wer=float("nan"),
+        hallucination_count=0,
+        ground_truth_tokens=0,
+        hallucination_percent=None,
+        hallucination_text="",
+        is_entire=is_entire,
+        duration=0,
+        transcript_density=None
+      )
+
+    gt_text, model_text, wer, gt_tokens = self.wer_calculator.calculate_for_pairs(pairs)
+    hallucination_total = sum(hallucination_counts)
+    hallucination_percent = (100 * hallucination_total / gt_tokens) if gt_tokens else None
+    hallucination_text = " ".join(hallucination_texts)
+
+    total_duration = sum(p.duration for p in pairs)
+    model_tokens = len(model_text.split()) if model_text else 0
+    transcript_density = (1000 * model_tokens) /total_duration if total_duration > 0 else None
+
+    return MetricsRow(
+      metadata=metadata,
+      session_id=session_id,
+      section=section_label,
+      ground_truth_text=gt_text,
+      model_text=model_text,
+      wer=wer,
+      hallucination_count=hallucination_total,
+      ground_truth_tokens=gt_tokens,
+      hallucination_percent=hallucination_percent,
+      hallucination_text=hallucination_text,
+      is_entire=is_entire,
+      duration=total_duration,
+      transcript_density=transcript_density
+    )
+  # === end modification for timestamp
+
+  # === start modification for model_toks - metrics_calculator.py
+  def OLD_3calculate_metrics_for_section(
+      self,
+      metadata: str,
+      session_id: str,
+      section_label: str,
+      pairs: list[TranscriptPair],
+      hallucination_counts: list[int],
+      hallucination_texts: list[str],
+      is_entire: bool = False
+  ) -> MetricsRow:
+    if not pairs:
+      return MetricsRow(
+        metadata=metadata,
+        session_id=session_id,
+        section=section_label,
+        ground_truth_text="",
+        model_text="",
+        wer=float("nan"),
+        hallucination_count=0,
+        ground_truth_tokens=0,
+        model_tokens=0,
+        hallucination_percent=None,
+        hallucination_text="",
+        is_entire=is_entire,
+        duration=0,
+        transcript_density=None
+      )
+
+    gt_text, model_text, wer, gt_tokens = self.wer_calculator.calculate_for_pairs(pairs)
+    hallucination_total = sum(hallucination_counts)
+    hallucination_percent = (100 * hallucination_total / gt_tokens) if gt_tokens else None
+    hallucination_text = " ".join(hallucination_texts)
+
+    total_duration = sum(p.duration for p in pairs)
+    model_tokens = len(model_text.split()) if model_text else 0
+    transcript_density = (1000 * model_tokens) / total_duration if total_duration > 0 else None
+
+    return MetricsRow(
+      metadata=metadata,
+      session_id=session_id,
+      section=section_label,
+      ground_truth_text=gt_text,
+      model_text=model_text,
+      wer=wer,
+      hallucination_count=hallucination_total,
+      ground_truth_tokens=gt_tokens,
+      model_tokens=model_tokens,
+      hallucination_percent=hallucination_percent,
+      hallucination_text=hallucination_text,
+      is_entire=is_entire,
+      duration=total_duration,
+      transcript_density=transcript_density
+    )
+  # === end modification for model_toks
+
+  # === start modification for hallucination_percent denominator - metrics_calculator.py
+  def OLD_4calculate_metrics_for_section(
+      self,
+      metadata: str,
+      session_id: str,
+      section_label: str,
+      pairs: list[TranscriptPair],
+      hallucination_counts: list[int],
+      hallucination_texts: list[str],
+      is_entire: bool = False
+  ) -> MetricsRow:
+    if not pairs:
+      return MetricsRow(
+        metadata=metadata,
+        session_id=session_id,
+        section=section_label,
+        ground_truth_text="",
+        model_text="",
+        wer=float("nan"),
+        hallucination_count=0,
+        ground_truth_tokens=0,
+        model_tokens=0,
+        hallucination_percent=None,
+        hallucination_text="",
+        is_entire=is_entire,
+        duration=0,
+        transcript_density=None
+      )
+
+    gt_text, model_text, wer, gt_tokens = self.wer_calculator.calculate_for_pairs(pairs)
+    hallucination_total = sum(hallucination_counts)
+
+    total_duration = sum(p.duration for p in pairs)
+    model_tokens = len(model_text.split()) if model_text else 0
+
+    hallucination_percent = (100 * hallucination_total / model_tokens) if model_tokens else None
+    hallucination_text = " ".join(hallucination_texts)
+
+    transcript_density = (1000 * model_tokens) / total_duration if total_duration > 0 else None
+
+    return MetricsRow(
+      metadata=metadata,
+      session_id=session_id,
+      section=section_label,
+      ground_truth_text=gt_text,
+      model_text=model_text,
+      wer=wer,
+      hallucination_count=hallucination_total,
+      ground_truth_tokens=gt_tokens,
+      model_tokens=model_tokens,
+      hallucination_percent=hallucination_percent,
+      hallucination_text=hallucination_text,
+      is_entire=is_entire,
+      duration=total_duration,
+      transcript_density=transcript_density
+    )
+  # === end modification for hallucination_percent denominator
+
+  # === start modification for transcript_density calculation - metrics_calculator.py
+  def OLD_5calculate_metrics_for_section(
+      self,
+      metadata: str,
+      session_id: str,
+      section_label: str,
+      pairs: list[TranscriptPair],
+      hallucination_counts: list[int],
+      hallucination_texts: list[str],
+      is_entire: bool = False
+  ) -> MetricsRow:
+    if not pairs:
+      return MetricsRow(
+        metadata=metadata,
+        session_id=session_id,
+        section=section_label,
+        ground_truth_text="",
+        model_text="",
+        wer=float("nan"),
+        hallucination_count=0,
+        ground_truth_tokens=0,
+        model_tokens=0,
+        hallucination_percent=None,
+        hallucination_text="",
+        is_entire=is_entire,
+        duration=0,
+        transcript_density=None
+      )
+
+    gt_text, model_text, wer, gt_tokens = self.wer_calculator.calculate_for_pairs(pairs)
+    hallucination_total = sum(hallucination_counts)
+
+    total_duration = sum(p.duration for p in pairs)
+    model_tokens = len(model_text.split()) if model_text else 0
+
+    hallucination_percent = (100 * hallucination_total / model_tokens) if model_tokens else None
+    hallucination_text = " ".join(hallucination_texts)
+
+    row_count = len(pairs)
+    transcript_density = (60 * 1000 * row_count) / total_duration if total_duration > 0 else None
+
+    return MetricsRow(
+      metadata=metadata,
+      session_id=session_id,
+      section=section_label,
+      ground_truth_text=gt_text,
+      model_text=model_text,
+      wer=wer,
+      hallucination_count=hallucination_total,
+      ground_truth_tokens=gt_tokens,
+      model_tokens=model_tokens,
+      hallucination_percent=hallucination_percent,
+      hallucination_text=hallucination_text,
+      is_entire=is_entire,
+      duration=total_duration,
+      transcript_density=transcript_density
+    )
+  # === end modification for transcript_density calculation
+
+  # === start modification for toxic columns - metrics_calculator.py
+  def calculate_metrics_for_section(
+      self,
+      metadata: str,
+      session_id: str,
+      section_label: str,
+      pairs: list[TranscriptPair],
+      hallucination_counts: list[int],
+      hallucination_texts: list[str],
+      is_entire: bool = False
+  ) -> MetricsRow:
+    if not pairs:
+      return MetricsRow(
+        metadata=metadata,
+        session_id=session_id,
+        section=section_label,
+        ground_truth_text="",
+        model_text="",
+        wer=float("nan"),
+        hallucination_count=0,
+        ground_truth_tokens=0,
+        model_tokens=0,
+        hallucination_percent=None,
+        hallucination_text="",
+        toxic_text="",
+        toxic_percent=None,
+        duration=0,
+        transcript_density=None,
+        is_entire=is_entire
+      )
+
+    gt_text, model_text, wer, gt_tokens = self.wer_calculator.calculate_for_pairs(pairs)
+    hallucination_total = sum(hallucination_counts)
+
+    total_duration = sum(p.duration for p in pairs)
+    model_tokens = len(model_text.split()) if model_text else 0
+
+    hallucination_percent = (100 * hallucination_total / model_tokens) if model_tokens else None
+    hallucination_text = " ".join(hallucination_texts)
+
+    row_count = len(pairs)
+    transcript_density = (60 * 1000 * row_count) / total_duration if total_duration > 0 else None
+
+    # Find toxic tokens in model text
+    toxic_tokens_found, toxic_count, toxic_percent = self.toxic_detector.find_toxic_tokens(model_text)
+    toxic_text = ", ".join(toxic_tokens_found) if toxic_tokens_found else ""
+
+    return MetricsRow(
+      metadata=metadata,
+      session_id=session_id,
+      section=section_label,
+      ground_truth_text=gt_text,
+      model_text=model_text,
+      wer=wer,
+      hallucination_count=hallucination_total,
+      ground_truth_tokens=gt_tokens,
+      model_tokens=model_tokens,
+      hallucination_percent=hallucination_percent,
+      hallucination_text=hallucination_text,
+      toxic_text=toxic_text,
+      toxic_percent=toxic_percent,
+      duration=total_duration,
+      transcript_density=transcript_density,
+      is_entire=is_entire
+    )
+
+  # === end modification for toxic columns
+
+  def calculate_section_metrics(
+      self,
+      metadata: str,
+      session_id: str,
+      pairs: list[TranscriptPair],
+      hallucination_counts: list[int],
+      hallucination_texts: list[str]
+  ) -> list[MetricsRow]:
+    spans = self.section_splitter.compute_spans(len(pairs), NUMBER_OF_SECTIONS)
+    metrics: list[MetricsRow] = []
+
+    for section_number, (start, end) in enumerate(spans, start=1):
+      section_pairs = pairs[start:end]
+      section_halluc_counts = hallucination_counts[start:end]
+      section_halluc_texts = hallucination_texts[start:end]
+
+      metrics.append(
+        self.calculate_metrics_for_section(
+          metadata,
+          session_id,
+          section_number,
+          section_pairs,
+          section_halluc_counts,
+          section_halluc_texts,
+          is_entire=False
+        )
+      )
+
+    return metrics
+
+# === start modification for toxic columns - metrics_calculator.py
+class ToxicTokenDetector:
+  def __init__(self, toxic_file_path: str):
+    self.toxic_tokens = self._load_toxic_tokens(toxic_file_path)
+
+  def _load_toxic_tokens(self, file_path: str) -> set[str]:
+    """Load toxic tokens from file, one token per line or comma-separated."""
+    toxic_tokens = set()
+    if not os.path.exists(file_path):
+      return toxic_tokens
+
+    try:
+      with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+        # Support both newline-separated and comma-separated formats
+        tokens = content.replace('\n', ',').split(',')
+        toxic_tokens = {token.strip().lower() for token in tokens if token.strip()}
+    except Exception as e:
+      print(f"Warning: Could not load toxic tokens from {file_path}: {e}")
+
+    return toxic_tokens
+
+  def find_toxic_tokens(self, text: str) -> tuple[list[str], int, float]:
+    """
+    Find toxic tokens in text.
+    Returns: (list of toxic tokens found, count, percentage)
+    """
+    if not text:
+      return [], 0, None
+
+    # Split text into tokens (words)
+    tokens = text.lower().split()
+    total_tokens = len(tokens)
+
+    if total_tokens == 0:
+      return [], 0, None
+
+    # Find toxic tokens
+    toxic_found = [token for token in tokens if token in self.toxic_tokens]
+    toxic_count = len(toxic_found)
+    toxic_percent = (100 * toxic_count / total_tokens) if total_tokens > 0 else None
+
+    return toxic_found, toxic_count, toxic_percent
+# === end modification for toxic columns
