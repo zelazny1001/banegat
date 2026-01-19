@@ -1,0 +1,689 @@
+# code_flow_tracer.py
+"""
+Complete Code Flow Tracer for Python
+====================================
+Tracks function calls, parameters, returns, and specific values through execution flow.
+
+Features:
+1. Tracks function call sequence with accurate line numbers
+2. Logs parameter values on entry and return values on exit
+3. Can track specific objects through the flow
+4. Generates textual narratives
+5. Generates PlantUML sequence diagrams
+6. Easy to enable/disable for production
+7. Auto-prints tracking messages with 📌 emoji
+8. Zero side effects on tracked objects
+9. Shows filename:line numbers from user code
+
+Usage:
+    from code_flow_tracer import trace, track, enable_tracing, print_flow
+
+    enable_tracing()
+
+    @trace(show_params=True, show_return=True)
+    def my_function(data):
+        return process(data)
+
+    data = track(load_data(), "my_data")
+    result = my_function(data)
+    print_flow()
+"""
+
+import functools
+import inspect
+import traceback
+import os
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+class CodeFlowTracer:
+  """
+  Main tracer class for tracking code execution flow.
+  Singleton pattern - only one instance exists.
+  """
+
+  _instance = None
+
+  def __new__(cls):
+    if cls._instance is None:
+      cls._instance = super().__new__(cls)
+    return cls._instance
+
+  def __init__(self):
+    """Initialize the tracer (only once due to singleton)."""
+    if not hasattr(self, '_initialized'):
+      self.enabled = False
+      self.tracked_objects = {}
+      self.flow_log = []
+      self.call_stack = []
+      self.indent_level = 0
+      self.function_calls = []
+      self.auto_print_track = True
+      self.track_counter = 0
+      self.show_tracked_changes = True
+      self._initialized = True
+
+  # ========== PUBLIC API ==========
+  def enable(self):
+    """Enable tracing."""
+    self.enabled = True
+    self._log('system', "Code flow tracing ENABLED")
+
+  def disable(self):
+    """Disable tracing."""
+    self.enabled = False
+    self._log('system', "Code flow tracing DISABLED")
+
+  def is_enabled(self):
+    """Check if tracing is enabled."""
+    return self.enabled
+
+  def clear(self):
+    """Clear all tracking data."""
+    self.tracked_objects.clear()
+    self.flow_log.clear()
+    self.call_stack.clear()
+    self.function_calls.clear()
+    self.indent_level = 0
+    self.track_counter = 0
+
+  def track_object(self, obj: Any, name: Optional[str] = None,
+                   auto_print: bool = True) -> Any:
+    """
+    Start tracking a specific object through the code flow.
+
+    Args:
+        obj: The object to track (NOT modified)
+        name: Optional name for the object
+        auto_print: Whether to automatically print tracking message
+
+    Returns:
+        The exact same object that was passed in
+    """
+    if not self.enabled:
+      return obj
+
+    obj_id = id(obj)
+
+    # Try to auto-detect variable name
+    if name is None:
+      name = self._get_variable_name(obj)
+      if name is None:
+        self.track_counter += 1
+        name = f"tracked_obj_{self.track_counter}"
+
+    # Store the object
+    self.tracked_objects[obj_id] = {
+      'name': name,
+      'value': obj,
+      'original_name': name,
+      'history': [(datetime.now(), 'registered', obj)]
+    }
+
+    # Auto-print the tracking message
+    value_preview = self._format_value(obj, max_length=40)
+    self._log('track', f"Now tracking: {name} = {value_preview}", obj)
+
+    return obj
+
+  def track(self, obj: Any, name: Optional[str] = None) -> Any:
+    """Alias for track_object with auto-printing."""
+    return self.track_object(obj, name, auto_print=True)
+
+  def silent_track(self, obj: Any, name: Optional[str] = None) -> Any:
+    """Track without auto-printing."""
+    return self.track_object(obj, name, auto_print=False)
+
+  def untrack_object(self, obj: Any):
+    """Stop tracking an object."""
+    obj_id = id(obj)
+    if obj_id in self.tracked_objects:
+      name = self.tracked_objects[obj_id]['name']
+      del self.tracked_objects[obj_id]
+      self._log('track', f"Stopped tracking: {name}")
+
+  def trace_function(self, show_params: bool = True, show_return: bool = True,
+                     track_return: bool = False) -> callable:
+    """
+    Decorator to trace a function.
+
+    Args:
+        show_params: Show parameter values on entry
+        show_return: Show return value on exit
+        track_return: Automatically track the return value
+    """
+
+    def decorator(func):
+      @functools.wraps(func)
+      def wrapper(*args, **kwargs):
+        # Skip if tracing is disabled
+        if not self.enabled:
+          return func(*args, **kwargs)
+
+        # Get function info
+        func_name = func.__name__
+        module_name = func.__module__
+        full_name = f"{module_name}.{func_name}" if module_name != "__main__" else func_name
+
+        # Update call stack
+        self.call_stack.append(full_name)
+        self.indent_level = len(self.call_stack) - 1
+
+        # Check for tracked objects in arguments
+        tracked_in_args = self._check_tracked_in_args(args, kwargs)
+
+        # Build entry message
+        entry_parts = []
+
+        if show_params:
+          # Get parameter names from signature
+          try:
+            sig = inspect.signature(func)
+            bound_args = sig.bind(*args, **kwargs)
+            bound_args.apply_defaults()
+
+            param_strs = []
+            for param_name, param_value in bound_args.arguments.items():
+              # Check if this parameter value is tracked
+              param_id = id(param_value)
+              if param_id in self.tracked_objects:
+                tracked_name = self.tracked_objects[param_id]['name']
+                param_strs.append(f"{param_name}→{tracked_name}")
+              else:
+                param_strs.append(f"{param_name}={self._format_value(param_value, 30)}")
+
+            entry_parts.append(f"({', '.join(param_strs)})")
+          except:
+            # Fallback if signature binding fails
+            arg_strs = [self._format_value(arg, 30) for arg in args]
+            kwarg_strs = [f"{k}={self._format_value(v, 30)}" for k, v in kwargs.items()]
+            all_args = arg_strs + kwarg_strs
+            entry_parts.append(f"({', '.join(all_args)})")
+        else:
+          entry_parts.append("(...)")
+
+        # Add tracked objects info
+        if tracked_in_args:
+          entry_parts.append(f"[Tracking: {', '.join(tracked_in_args)}]")
+
+        entry_msg = f"{full_name}{''.join(entry_parts)}"
+        self._log('entry', entry_msg, {'args': args, 'kwargs': kwargs})
+
+        # Record for PlantUML
+        if self.call_stack:
+          caller = self.call_stack[-2] if len(self.call_stack) > 1 else "main"
+          self.function_calls.append({
+            'caller': caller,
+            'callee': full_name,
+            'args': args,
+            'kwargs': kwargs,
+            'timestamp': datetime.now()
+          })
+
+        # Execute the function
+        try:
+          result = func(*args, **kwargs)
+
+          # Check if any tracked objects in args were modified
+          for i, arg in enumerate(args):
+            arg_id = id(arg)
+            if arg_id in self.tracked_objects:
+              self._update_tracked_object(arg_id, arg, f"arg{i} in {func_name}")
+
+          for key, value in kwargs.items():
+            value_id = id(value)
+            if value_id in self.tracked_objects:
+              self._update_tracked_object(value_id, value, f"{key} in {func_name}")
+
+          # Build exit message
+          exit_parts = []
+
+          if show_return and result is not None:
+            # Check if return value is tracked
+            result_id = id(result)
+            if result_id in self.tracked_objects:
+              tracked_name = self.tracked_objects[result_id]['name']
+              exit_parts.append(f"→ {tracked_name}")
+            else:
+              exit_parts.append(f"→ {self._format_value(result, 40)}")
+
+          exit_msg = f"{full_name}"
+          if exit_parts:
+            exit_msg += f" returns {''.join(exit_parts)}"
+
+          self._log('exit', exit_msg, {'result': result})
+
+          # Auto-track return value if requested
+          if track_return and result is not None:
+            return_name = f"{func_name}_return"
+            self.track_object(result, return_name, auto_print=False)
+
+          return result
+
+        except Exception as e:
+          # Log exception
+          error_msg = f"{full_name} raised {type(e).__name__}: {str(e)}"
+          self._log('error', error_msg, {'exception': e})
+          raise
+
+        finally:
+          # Clean up call stack
+          if self.call_stack:
+            self.call_stack.pop()
+          self.indent_level = len(self.call_stack)
+
+      return wrapper
+
+    return decorator
+
+  def get_textual_narrative(self) -> str:
+    """Generate a textual narrative of the execution flow."""
+    if not self.flow_log:
+      return "No execution flow recorded."
+
+    narrative = ["CODE EXECUTION FLOW NARRATIVE", "=" * 60, ""]
+
+    for log_type, message, data, timestamp, line_no, filename in self.flow_log:
+      # Skip internal tracking messages if desired
+      if log_type == 'track' and 'Now tracking' in message:
+        narrative.append(f"[TRACKING STARTED] {message.split('Now tracking: ')[1]}")
+      elif log_type == 'change':
+        narrative.append(f"[VALUE CHANGE] {message}")
+      elif log_type in ['entry', 'exit', 'error']:
+        narrative.append(message)
+
+    # Add summary
+    narrative.append("")
+    narrative.append("=" * 60)
+    narrative.append("SUMMARY")
+
+    # Count function calls
+    entry_count = sum(1 for log_type, _, _, _, _, _ in self.flow_log if log_type == 'entry')
+    exit_count = sum(1 for log_type, _, _, _, _, _ in self.flow_log if log_type == 'exit')
+    change_count = sum(1 for log_type, _, _, _, _, _ in self.flow_log if log_type == 'change')
+
+    narrative.append(f"Total function calls: {entry_count}")
+    narrative.append(f"Tracked value changes: {change_count}")
+
+    if self.tracked_objects:
+      narrative.append("")
+      narrative.append("TRACKED OBJECTS FINAL STATE:")
+      for obj_id, obj_info in self.tracked_objects.items():
+        narrative.append(f"  {obj_info['name']}: {self._format_value(obj_info['value'])}")
+
+    return "\n".join(narrative)
+
+  def generate_plantuml(self, title: str = "Code Execution Flow") -> str:
+    """Generate a PlantUML sequence diagram."""
+    if not self.function_calls:
+      return "@startuml\ntitle No function calls recorded\n@enduml"
+
+    # Collect all participants
+    participants = set()
+    for call in self.function_calls:
+      participants.add(call['caller'])
+      participants.add(call['callee'])
+
+    plantuml = [
+      "@startuml",
+      f"title {title}",
+      ""
+    ]
+
+    # Add participants (limit to main ones for readability)
+    main_participants = sorted(participants)
+    for participant in main_participants[:10]:  # Limit to 10 for readability
+      plantuml.append(f'participant "{participant}"')
+
+    plantuml.append("")
+
+    # Add calls
+    for call in self.function_calls:
+      caller = call['caller']
+      callee = call['callee']
+
+      # Format arguments for display
+      arg_strs = []
+      for arg in call['args']:
+        arg_str = self._format_value(arg, max_length=15)
+        arg_strs.append(arg_str)
+
+      for key, value in call['kwargs'].items():
+        value_str = self._format_value(value, max_length=15)
+        arg_strs.append(f"{key}={value_str}")
+
+      args_display = f"({', '.join(arg_strs)})" if arg_strs else "()"
+
+      plantuml.append(f'"{caller}" -> "{callee}": {callee.split(".")[-1]}{args_display}')
+      plantuml.append(f'"{callee}" --> "{caller}": return')
+
+    plantuml.append("@enduml")
+    return "\n".join(plantuml)
+
+  def save_plantuml_to_file(self, filename: str = "code_flow.puml"):
+    """Save PlantUML diagram to a file."""
+    plantuml_code = self.generate_plantuml()
+    with open(filename, 'w') as f:
+      f.write(plantuml_code)
+    self._log('system', f"PlantUML diagram saved to {filename}")
+
+  def print_summary(self, include_plantuml: bool = True):
+    """Print a summary of the execution flow.
+
+    Args:
+        include_plantuml: Whether to include PlantUML code
+    """
+    print("\n" + "=" * 60)
+    print("CODE FLOW SUMMARY")
+    print("=" * 60)
+    print(self.get_textual_narrative())
+
+    if include_plantuml:
+      # Optional: Print PlantUML info
+      print("\nTo generate a sequence diagram:")
+      print("1. Copy the PlantUML code below to https://www.plantuml.com/plantuml")
+      print("2. Or save it to a .puml file and use PlantUML tools")
+      print("\nPlantUML Code:")
+      print(self.generate_plantuml())
+
+  # ========== PRIVATE METHODS ==========
+  def _get_variable_name(self, obj: Any) -> Optional[str]:
+    """Try to get the variable name of an object from caller's frame."""
+    try:
+      frame = inspect.currentframe()
+      # Go back 2 frames: 1 for this method, 1 for the caller
+      caller_frame = frame.f_back.f_back if frame.f_back else None
+
+      if caller_frame:
+        for var_name, var_val in caller_frame.f_locals.items():
+          if var_val is obj:
+            return var_name
+
+        # Also check globals
+        for var_name, var_val in caller_frame.f_globals.items():
+          if var_val is obj:
+            return var_name
+    except Exception:
+      pass
+
+    return None
+
+  def _format_value(self, value: Any, max_length: int = 50) -> str:
+    """Format a value for display in logs."""
+    if value is None:
+      return "None"
+    elif isinstance(value, str):
+      if len(value) > max_length:
+        return f"'{value[:max_length]}...' ({len(value)} chars)"
+      return f"'{value}'"
+    elif isinstance(value, (int, float, bool)):
+      return str(value)
+    elif isinstance(value, (list, tuple, set)):
+      type_name = type(value).__name__
+      length = len(value)
+      if length == 0:
+        return f"{type_name}[]"
+
+      # Show first few elements
+      sample = []
+      for i, item in enumerate(value):
+        if i >= 3:  # Show max 3 items
+          sample.append("...")
+          break
+        sample.append(self._format_value(item, max_length=20))
+
+      sample_str = ", ".join(sample)
+      return f"{type_name}[{length}] = [{sample_str}]"
+    elif isinstance(value, dict):
+      length = len(value)
+      if length == 0:
+        return "dict{}"
+
+      # Show first few key-value pairs
+      sample = []
+      for i, (k, v) in enumerate(value.items()):
+        if i >= 2:  # Show max 2 items
+          sample.append("...")
+          break
+        sample.append(f"{self._format_value(k, 10)}: {self._format_value(v, 10)}")
+
+      sample_str = ", ".join(sample)
+      return f"dict[{length}] = {{{sample_str}}}"
+    elif hasattr(value, '__class__'):
+      class_name = value.__class__.__name__
+      try:
+        # Try to get a string representation
+        str_repr = str(value)
+        if len(str_repr) > 30:
+          str_repr = str_repr[:30] + "..."
+        return f"{class_name}: {str_repr}"
+      except:
+        return f"{class_name} instance"
+    else:
+      return str(type(value))
+
+  def _log(self, log_type: str, message: str, data: Any = None):
+    """Internal logging method with accurate line numbers from user code."""
+    line_no = 0
+    filename = "unknown"
+
+    try:
+      # Get the complete stack trace
+      import traceback
+
+      stack = traceback.extract_stack()
+
+      # Walk through the stack from bottom to top
+      # We need to skip frames from the tracer module itself
+      tracer_module_names = ['code_flow_tracer.py', 'trace_flow.py', __file__]
+
+      for frame in reversed(stack):
+        frame_file = frame.filename
+
+        # Check if this frame is from the tracer module
+        is_tracer_frame = False
+        for tracer_name in tracer_module_names:
+          if tracer_name in frame_file:
+            is_tracer_frame = True
+            break
+
+        # If it's NOT a tracer frame, we found user code
+        if not is_tracer_frame:
+          line_no = frame.lineno
+          filename = os.path.basename(frame_file)
+          break
+
+    except Exception:
+      line_no = 0
+      filename = "unknown"
+
+    # Format: "myfile.py:45" (padded for alignment)
+    location = f"{filename}:{line_no}"
+
+    indent = "  " * self.indent_level
+
+    # Add level indicator
+    if log_type == 'entry':
+      level_indicator = f"({self.indent_level})→"
+    elif log_type == 'exit':
+      level_indicator = f"({self.indent_level})←"
+    elif log_type == 'error':
+      level_indicator = f"({self.indent_level})✗"
+    elif log_type == 'change':
+      level_indicator = f"({self.indent_level})Δ"
+    elif log_type == 'track':
+      level_indicator = "📌"
+    elif log_type == 'system':
+      level_indicator = "⚙"
+    else:
+      level_indicator = "  "
+
+    full_message = f"{location:25} {indent}{level_indicator} {message}"
+
+    # Store in log (update tuple to include filename and line_no)
+    self.flow_log.append((log_type, full_message, data, datetime.now(), line_no, filename))
+
+    # Print to console if enabled
+    if self.enabled:
+      print(full_message)
+
+  def _check_tracked_in_args(self, args: tuple, kwargs: dict) -> List[str]:
+    """Check if any tracked objects are in the arguments."""
+    tracked_info = []
+
+    # Check positional arguments
+    for i, arg in enumerate(args):
+      arg_id = id(arg)
+      if arg_id in self.tracked_objects:
+        tracked_obj = self.tracked_objects[arg_id]
+        tracked_info.append(f"arg{i}→{tracked_obj['name']}")
+
+    # Check keyword arguments
+    for key, value in kwargs.items():
+      value_id = id(value)
+      if value_id in self.tracked_objects:
+        tracked_obj = self.tracked_objects[value_id]
+        tracked_info.append(f"{key}→{tracked_obj['name']}")
+
+    return tracked_info
+
+  def _update_tracked_object(self, obj_id: int, new_value: Any, context: str = ""):
+    """Update a tracked object's value and log changes."""
+    if obj_id not in self.tracked_objects:
+      return
+
+    tracked_obj = self.tracked_objects[obj_id]
+    old_value = tracked_obj['value']
+
+    # Update the value
+    tracked_obj['value'] = new_value
+    tracked_obj['history'].append((datetime.now(), context, new_value))
+
+    # Check if value changed (not just same reference)
+    if old_value is not new_value and self.show_tracked_changes:
+      old_repr = self._format_value(old_value, max_length=30)
+      new_repr = self._format_value(new_value, max_length=30)
+
+      if old_repr != new_repr:
+        indent = "  " * self.indent_level
+        change_msg = f"Tracked object changed: {tracked_obj['name']}"
+        if context:
+          change_msg += f" ({context})"
+        change_msg += f"\n{indent}    From: {old_repr}"
+        change_msg += f"\n{indent}    To:   {new_repr}"
+        self._log('change', change_msg)
+
+# ========== GLOBAL TRACER INSTANCE ==========
+tracer = CodeFlowTracer()
+
+# ========== PUBLIC CONVENIENCE FUNCTIONS ==========
+
+def enable_tracing():
+  """Enable code flow tracing."""
+  tracer.enable()
+
+def disable_tracing():
+  """Disable code flow tracing."""
+  tracer.disable()
+
+def trace(**kwargs):
+  """
+  Decorator to trace a function.
+
+  Example:
+      @trace(show_params=True, show_return=True)
+      def my_function(data):
+          return process(data)
+  """
+  return tracer.trace_function(**kwargs)
+
+def track(obj: Any, name: Optional[str] = None) -> Any:
+  """
+  Start tracking an object with automatic printing.
+
+  Example:
+      data = track(load_data(), "my_data")  # Auto-prints tracking message
+      # data is unchanged, just being tracked
+  """
+  return tracer.track(obj, name)
+
+def silent_track(obj: Any, name: Optional[str] = None) -> Any:
+  """Track an object without auto-printing."""
+  return tracer.silent_track(obj, name)
+
+def untrack(obj: Any):
+  """Stop tracking an object."""
+  tracer.untrack_object(obj)
+
+def get_narrative() -> str:
+  """Get textual narrative of execution flow."""
+  return tracer.get_textual_narrative()
+
+def get_plantuml() -> str:
+  """Get PlantUML sequence diagram code."""
+  return tracer.generate_plantuml()
+
+def print_flow(include_plantuml: bool = True):
+  """Print the execution flow summary.
+
+  Args:
+      include_plantuml: Whether to include PlantUML code (default: True)
+  """
+  tracer.print_summary(include_plantuml)
+
+def clear_tracing():
+  """Clear all tracing data."""
+  tracer.clear()
+
+def save_plantuml(filename: str = "code_flow.puml"):
+  """Save PlantUML diagram to a file."""
+  tracer.save_plantuml_to_file(filename)
+
+# ========== DEMO/EXAMPLE ==========
+
+if __name__ == "__main__":
+  print("=" * 70)
+  print("CODE FLOW TRACER DEMO")
+  print("=" * 70)
+
+  # Enable tracing
+  enable_tracing()
+
+  # Example functions
+  @trace(show_params=True, show_return=True)
+  def process_numbers(numbers):
+    """Process a list of numbers."""
+    return [n * 2 for n in numbers]
+
+  @trace(show_params=True, show_return=True, track_return=True)
+  def calculate_average(numbers):
+    """Calculate average of numbers."""
+    if not numbers:
+      return 0
+    return sum(numbers) / len(numbers)
+
+  @trace(show_params=True, show_return=True)
+  def main_workflow():
+    """Main workflow example."""
+    # Create and track data
+    data = [10, 20, 30, 40, 50]
+    data = track(data, "my_numbers")
+
+    # Process data
+    doubled = process_numbers(data)
+
+    # Calculate average
+    avg = calculate_average(doubled)
+
+    return {"doubled": doubled, "average": avg}
+
+  # Run the example
+  print("\nRunning example workflow...\n")
+  result = main_workflow()
+
+  print(f"\nFinal result: {result}")
+  print_flow(include_plantuml=False)  # No PlantUML
+
+  # Save PlantUML separately if needed
+  save_plantuml("demo_flow.puml")
+  print(f"\nPlantUML diagram saved to 'demo_flow.puml'")
