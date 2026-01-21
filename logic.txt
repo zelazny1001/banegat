@@ -687,3 +687,247 @@ if __name__ == "__main__":
   # Save PlantUML separately if needed
   save_plantuml("demo_flow.puml")
   print(f"\nPlantUML diagram saved to 'demo_flow.puml'")
+  
+  # ===========
+  
+  # ASR Metrics OOP
+
+Object-oriented application that processes ASR transcript data from input spreadsheets, 
+then generates metrics and summary reports.
+
+## Data Flow Overview
+
+```
+ASR_*.xlsx input files → Read & Group by Session → Calculate Metrics → Consolidate → Monthly Summary
+```
+
+## 1. Input Reading
+
+**Source:** `worksheet_reader.py`, `file_manager.py`
+
+### Worksheet Identification
+
+- Files matching `ASR_*.xlsx` are found (excluding `*_metrics.xlsx` and `*_monthly_metrics.xlsx`)
+- First worksheet starting with "ASR" prefix is processed
+
+### Row Processing
+
+- Rows are grouped by `session_id`
+- Each row becomes a `TranscriptPair` with:
+  - `transcript` - raw model output
+  - `ground_truth` - expected text
+  - `timestamp` - optional timestamp
+  - `duration` - calculated from consecutive timestamps
+- If `vtype` column exists, rows are separated by speaker type (person2/person1)
+- Hallucination data is extracted from the `Hallucination` column
+
+### Required Columns
+
+| Column | Description |
+|--------|-------------|
+| `session_id` | Groups rows into sessions |
+| `raw_transcript` | Model output text |
+| `vtype` | Speaker type: "person2" or "person1" |
+| `Ground Truth Transcript` | Expected text |
+| `Hallucination` | Hallucination flag or count |
+
+### Optional Columns
+
+| Column | Description |
+|--------|-------------|
+| `Timestamp` | Row timestamp for duration calculation |
+
+## 2. Data Transformations & Processing
+
+**Source:** `metrics_calculator.py`, `session_processor.py`
+
+### Text Preprocessing
+
+The `TextPreprocessor` normalizes text before WER calculation:
+- Convert to lowercase
+- Remove punctuation: `. , - ? …`
+- Remove braces: `{text}`
+- Remove brackets: `[]`
+- Normalize using rules from POC
+
+### Session Processing
+
+For each session:
+
+1. **Section Splitting** - Session is divided into 5 sections via `SectionSplitter`
+2. **Metrics Calculation** - For each section, these metrics are computed:
+
+| Metric | Formula | Description |
+|--------|---------|-------------|
+| WER% | `100 * (S + I + D) / GT_tokens` | Word Error Rate with substitution/insertion/deletion counts |
+| Hallucination% | `100 * hallucination_count / model_tokens` | Percentage of hallucinated content |
+| Transcript Density | `60 * row_count / total_duration` | Requests per minute |
+| Toxic% | `100 * toxic_count / model_tokens` | Percentage of toxic tokens (from `toxic_words.csv`) |
+
+### Output per Session
+
+- **Regular sessions:** 6 `MetricsRow` objects (1 "entire" + 5 sections)
+- **Speaker-separated sessions:** 12 `MetricsRow` objects (6 per speaker)
+
+## 3. Monthly Summary Generation
+
+**Source:** `summary_calculator.py`, `monthly_workbook_processor.py`
+
+The `SummaryCalculator.calculate_overall_summary()` aggregates all metrics:
+
+### For Speaker-Separated Data
+
+Groups metrics by speaker (person2, person1) and calculates:
+
+| Metric | Calculation |
+|--------|-------------|
+| Average WER | Mean of all WER% values |
+| Average Hallucination% | Mean of hallucination percentages |
+| Average Transcript Density | Mean of density values |
+| Session Count | Count of unique sessions |
+| Toxic% | `100 * total_toxic_count / total_model_tokens` |
+
+A "Both" row is created combining person2 + person1 metrics per session.
+
+### Granularity Setting
+
+Controlled by `CALL_LEVEL_GRANULARITY` in `constants.py`:
+- `True` - Uses only "entire" rows (full session aggregated)
+- `False` - Uses section rows (1-5)
+
+## 4. Monthly Summary Worksheet Output
+
+### Columns
+
+| Column | Description |
+|--------|-------------|
+| `metadata` | Identifier from input filename |
+| `Speaker` | person2, person1, or Both (optional) |
+| `AVG_WER` | Average Word Error Rate % |
+| `num sessions` | Session count |
+| `Avg Hallucination %` | Average hallucination percentage |
+| `Avg. Reqs/Min.` | Average transcript density |
+| `Toxic%` | Overall toxic percentage |
+
+### Rows
+
+- **Speaker-separated data:** 3 rows (person2, person1, Both)
+- **Non-speaker data:** 1 row
+
+## 5. Key Classes & Files
+
+### Data Models (`data_models.py`)
+
+```python
+TranscriptPair:
+    transcript: str          # Raw model output
+    ground_truth: str        # Expected text
+    timestamp: Optional[int]
+    duration: int            # Seconds
+
+SessionData:
+    session_id: str
+    transcript_pairs: list[TranscriptPair]
+    hallucination_data: Optional[HallucinationData]
+
+SpeakerSessionData:
+    session_id: str
+    person2_pairs: list[TranscriptPair]
+    person1_pairs: list[TranscriptPair]
+    person2_hallucinations: Optional[HallucinationData]
+    person1_hallucinations: Optional[HallucinationData]
+
+MetricsRow:
+    metadata, session_id, section
+    ground_truth_text, model_text, wer
+    hallucination_count, hallucination_percent
+    substitutions, insertions, deletions
+    ground_truth_tokens, model_tokens
+    toxic_text, toxic_percent
+    duration, row_count, transcript_density
+
+SummaryData:
+    metadata: str
+    average_wer: float
+    session_count: int
+    average_hallucination_percent: float
+    speaker: Optional[str]  # person2, person1, or Both
+    average_transcript_density: Optional[float]
+    toxic_percent: Optional[float]
+```
+
+### Key Classes
+
+| Class | File | Purpose |
+|-------|------|---------|
+| `ApplicationOrchestrator` | `main_orchestrator.py` | Entry point; orchestrates file processing and monthly consolidation |
+| `FileManager` | `file_manager.py` | Lists and validates input files matching `ASR_*.xlsx` pattern |
+| `WorksheetReader` | `worksheet_reader.py` | Reads ASR_ worksheet, groups by session, extracts hallucination data |
+| `WorkbookProcessor` | `workbook_processor.py` | Main processor for individual input files |
+| `SessionProcessor` | `session_processor.py` | Processes regular sessions (no speaker distinction) |
+| `SpeakerSessionProcessor` | `session_processor.py` | Processes speaker-separated sessions (person2/person1) |
+| `MetricsCalculator` | `metrics_calculator.py` | Computes WER, hallucination, and toxic metrics per section |
+| `WERCalculator` | `metrics_calculator.py` | Calculates Word Error Rate using NLTK/JiWER |
+| `TextPreprocessor` | `metrics_calculator.py` | Normalizes text for WER calculation |
+| `SectionSplitter` | `metrics_calculator.py` | Divides transcript pairs into 5 sections |
+| `ToxicTokenDetector` | `metrics_calculator.py` | Detects toxic tokens in output |
+| `MonthlyWorkbookProcessor` | `monthly_workbook_processor.py` | Creates consolidated monthly workbook |
+| `SummaryCalculator` | `summary_calculator.py` | Calculates summary statistics for monthly-summary worksheet |
+| `MetricsWorksheetWriter` | `worksheet_writer.py` | Writes metrics rows to metrics worksheet |
+| `SummaryWorksheetWriter` | `worksheet_writer.py` | Writes summary rows to monthly-summary worksheet |
+
+## 6. Configuration
+
+Key settings in `constants.py`:
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `SPREADSHEET_PREFIX` | `"ASR"` | Identifies input files |
+| `WORKSHEET_PREFIX` | `"ASR"` | Identifies input worksheets |
+| `MONTHLY_SUMMARY_WORKSHEET_NAME` | `"monthly-summary"` | Output sheet name |
+| `DO_MONTHLY_CONSOLIDATION` | `True` | Enables monthly processing |
+| `CALL_LEVEL_GRANULARITY` | `True` | Use "entire" rows vs. sections for summaries |
+| `AVERAGING_PERIOD` | `"weekly"` | Type of averaging |
+| `NUMBER_OF_SECTIONS` | `5` | Sections per session |
+| `COMPUTE_WER_LOCAL` | `True` | Calculate WER locally |
+| `WER_ALGORITHM` | `"nltk"` | WER calculation algorithm (nltk or jiwer) |
+
+## 7. Processing Pipeline Summary
+
+```
+Input: ASR_*.xlsx (spreadsheets with ASR_ worksheets)
+   │
+   ▼
+1. Identify & Read: ASR_ worksheet rows grouped by session_id
+   │
+   ▼
+2. Transform:
+   - Extract transcript pairs (model output, ground truth, timestamp)
+   - Group by speaker type (person2/person1) if present
+   - Pre-process text (lowercase, remove punctuation, normalize whitespace)
+   │
+   ▼
+3. Calculate Metrics per Section:
+   - Divide session into 5 sections
+   - Compute WER (including S/I/D counts)
+   - Calculate hallucination %
+   - Detect toxic tokens
+   - Compute transcript density
+   - Generate MetricsRow objects
+   │
+   ▼
+4. Write to Metrics Worksheet: Individual metric rows per section/speaker
+   │
+   ▼
+5. Consolidate: Combine metrics from all input files
+   │
+   ▼
+6. Calculate Summary: Aggregate metrics by speaker
+   - Average WER, hallucination %, density
+   - Count sessions
+   - Calculate overall toxic %
+   - Generate SummaryData objects
+   │
+   ▼
+Output: monthly-summary-worksheet with aggregated summary rows
+```
