@@ -690,7 +690,7 @@ if __name__ == "__main__":
   
   # ===========
   
-  # ASR Metrics OOP
+# ASR Metrics OOP
 
 Object-oriented application that processes ASR transcript data from input spreadsheets, 
 then generates metrics and summary reports.
@@ -768,6 +768,127 @@ For each session:
 
 - **Regular sessions:** 6 `MetricsRow` objects (1 "entire" + 5 sections)
 - **Speaker-separated sessions:** 12 `MetricsRow` objects (6 per speaker)
+
+### Section Splitting Example
+
+The `SectionSplitter.compute_spans()` method divides rows evenly, distributing any remainder to the **first** sections.
+
+```python
+base_size = total_items // section_count
+remainder = total_items % section_count
+
+# Each section gets base_size rows
+# First 'remainder' sections get 1 extra row
+```
+
+#### Example: 12 Rows, 5 Sections
+
+Suppose a session has **12 transcript rows**:
+
+| Row | session_id | raw_transcript | Ground Truth |
+|-----|------------|----------------|--------------|
+| 0   | sess_001   | "hello there"  | "hello there" |
+| 1   | sess_001   | "how are you"  | "how are you" |
+| 2   | sess_001   | "im fine"      | "i'm fine" |
+| 3   | sess_001   | "thats good"   | "that's good" |
+| 4   | sess_001   | "yes it is"    | "yes it is" |
+| 5   | sess_001   | "okay then"    | "okay then" |
+| 6   | sess_001   | "sure thing"   | "sure thing" |
+| 7   | sess_001   | "no problem"   | "no problem" |
+| 8   | sess_001   | "thanks alot"  | "thanks a lot" |
+| 9   | sess_001   | "your welcome" | "you're welcome" |
+| 10  | sess_001   | "bye now"      | "bye now" |
+| 11  | sess_001   | "see ya"       | "see you" |
+
+**Step 1: Calculate base size and remainder**
+
+```
+total_items   = 12
+section_count = 5
+
+base_size = 12 // 5 = 2
+remainder = 12 % 5  = 2
+```
+
+**Step 2: Distribute rows to sections**
+
+The first **2 sections** (equal to remainder) get **3 rows** each.
+The remaining **3 sections** get **2 rows** each.
+
+| Section | Size Calculation | Size | Row Indices | Span |
+|---------|------------------|------|-------------|------|
+| 1 | 2 + 1 (since 1 ≤ 2) | 3 | 0, 1, 2 | (0, 3) |
+| 2 | 2 + 1 (since 2 ≤ 2) | 3 | 3, 4, 5 | (3, 6) |
+| 3 | 2 + 0 (since 3 > 2) | 2 | 6, 7 | (6, 8) |
+| 4 | 2 + 0 (since 4 > 2) | 2 | 8, 9 | (8, 10) |
+| 5 | 2 + 0 (since 5 > 2) | 2 | 10, 11 | (10, 12) |
+
+**Total: 3 + 3 + 2 + 2 + 2 = 12 rows** ✓
+
+**Step 3: Metrics calculated per section**
+
+```
+Section 1 (rows 0-2):  "hello there", "how are you", "im fine"
+Section 2 (rows 3-5):  "thats good", "yes it is", "okay then"
+Section 3 (rows 6-7):  "sure thing", "no problem"
+Section 4 (rows 8-9):  "thanks alot", "your welcome"
+Section 5 (rows 10-11): "bye now", "see ya"
+```
+
+Each section gets its own WER%, hallucination%, etc. calculated independently.
+
+#### Example: 10 Rows, 5 Sections (Even Division)
+
+```
+base_size = 10 // 5 = 2
+remainder = 10 % 5  = 0
+```
+
+| Section | Size | Rows |
+|---------|------|------|
+| 1 | 2 | 0, 1 |
+| 2 | 2 | 2, 3 |
+| 3 | 2 | 4, 5 |
+| 4 | 2 | 6, 7 |
+| 5 | 2 | 8, 9 |
+
+**Total: 2 + 2 + 2 + 2 + 2 = 10 rows** ✓
+
+When remainder is 0, all sections get exactly `base_size` rows.
+
+#### Example: 7 Rows, 5 Sections
+
+```
+base_size = 7 // 5 = 1
+remainder = 7 % 5  = 2
+```
+
+| Section | Size | Rows |
+|---------|------|------|
+| 1 | 1 + 1 = 2 | 0, 1 |
+| 2 | 1 + 1 = 2 | 2, 3 |
+| 3 | 1 | 4 |
+| 4 | 1 | 5 |
+| 5 | 1 | 6 |
+
+**Total: 2 + 2 + 1 + 1 + 1 = 7 rows** ✓
+
+#### Edge Case: Fewer Rows Than Sections (3 Rows, 5 Sections)
+
+```
+base_size = 3 // 5 = 0
+remainder = 3 % 5  = 3
+```
+
+| Section | Size | Rows |
+|---------|------|------|
+| 1 | 0 + 1 = 1 | 0 |
+| 2 | 0 + 1 = 1 | 1 |
+| 3 | 0 + 1 = 1 | 2 |
+| 4 | 0 + 0 = 0 | (skipped) |
+| 5 | 0 + 0 = 0 | (skipped) |
+
+Only **3 sections** are created when there are only 3 rows.
 
 ## 3. Monthly Summary Generation
 
