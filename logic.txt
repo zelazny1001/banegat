@@ -1,87 +1,9 @@
-# transcript_extractor.py
-# given an input excel workbook, extract the contents of the "Transcript" column across all worksheets into multiple text files
-
-# Excel Workbook with multiple tabs -> ( worksheet_transcript_extractor ) -> output text files, 1 per worksheet
-# Each output text filename is named using worksheet label (lowercased, remove spaces, convert - to _)
-
-import sys
-from pathlib import Path
-from openpyxl import load_workbook
-
-INPUT_XLSX_FILEPATH = "/projects/sheet-logic/compare_models/single-speaker-combined.xlsx"
-OUTPUT_DIR = "/projects/sheet-logic/wip4-transcripts/"
-INPUT_COL_NAME = "Transcript"
-ID_PREFIX = "call_"
-INVERT = True
-INPUT_SEPARATOR = "-"
-OUTPUT_SEPARATOR = "_"
-JOIN_TXT_WITH = " " # or "\n"
-
-class WorksheetTranscriptExtractor:
-  def __init__(self, input_filepath, input_col_name, output_dir):
-    self.input_filepath = Path(input_filepath)
-    self.input_col_name = input_col_name
-    self.output_dir = Path(output_dir)
-
-  def validate_input_file(self):
-    if not self.input_filepath.exists():
-      print(f"Error: Input file not found: {self.input_filepath}")
-      sys.exit(1)
-
-  def ensure_output_directory(self):
-    self.output_dir.mkdir(parents=True, exist_ok=True)
-
-  def load_workbook_from_file(self):
-    return load_workbook(self.input_filepath, data_only=True)
-
-  def find_transcript_column_index(self, worksheet, col_name):
-    for cell in worksheet[1]:
-      if cell.value and cell.value.lower() == col_name.lower():
-        return cell.column
-    return None
-
-  def extract_transcript_lines(self, worksheet, column_index):
-    lines = []
-    for row in worksheet.iter_rows(min_row=2, min_col=column_index, max_col=column_index):
-      cell_value = row[0].value
-      lines.append(str(cell_value) if cell_value is not None else "")
-    return lines
-
-  def convert_worksheet_name_to_filename(self, worksheet_name):
-    p = worksheet_name.lower().replace(" ", "").split(INPUT_SEPARATOR)
-    if INVERT:
-      return f"{ID_PREFIX}{p[1]}{OUTPUT_SEPARATOR}{p[0]}.txt"
-    return f"{ID_PREFIX}{p[0]}{OUTPUT_SEPARATOR}{p[1]}.txt"
-
-  def write_lines_to_file(self, lines, filename):
-    output_path = self.output_dir / filename
-    with open(output_path, 'w', encoding='utf-8') as f:
-      f.write(f'{JOIN_TXT_WITH}'.join(lines))
-
-  def process_worksheet(self, worksheet, col_name):
-    column_index = self.find_transcript_column_index(worksheet, col_name)
-    if column_index is None:
-      return False
-
-    lines = self.extract_transcript_lines(worksheet, column_index)
-    filename = self.convert_worksheet_name_to_filename(worksheet.title)
-    self.write_lines_to_file(lines, filename)
-    return filename
-
-  def run(self):
-    self.validate_input_file()
-    self.ensure_output_directory()
-
-    workbook = self.load_workbook_from_file()
-    col_name = self.input_col_name
-
-    for worksheet in workbook.worksheets:
-      filename = self.process_worksheet(worksheet, col_name)
-      if filename:
-        print(f"Processed: {worksheet.title} => {filename}")
-      else:
-        print(f"Skipped (no Transcript column): {worksheet.title}")
-
-if __name__ == "__main__":
-  extractor = WorksheetTranscriptExtractor(INPUT_XLSX_FILEPATH, INPUT_COL_NAME, OUTPUT_DIR)
-  extractor.run()
+def extract_ids(transcription_dir: Path) -> list[str]:
+    filenames = [f.name for f in transcription_dir.glob("*.txt")]
+    pattern = re.compile(r"(?:Synthetic_(Call_\d+_\d+)_Combined_|call_([a-z]+)_(?:model1|model2))")
+    ids = sorted({
+        ID_PREFIX + (m.group(1) or m.group(2)).lower()
+        for f in filenames
+        if (m := pattern.match(f))
+    })
+    return ids
