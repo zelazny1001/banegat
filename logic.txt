@@ -1,9 +1,0 @@
-def extract_ids(transcription_dir: Path) -> list[str]:
-    filenames = [f.name for f in transcription_dir.glob("*.txt")]
-    pattern = re.compile(r"(?:Synthetic_(Call_\d+_\d+)_Combined_|call_([a-z]+)_(?:model1|model2))")
-    ids = sorted({
-        ID_PREFIX + (m.group(1) or m.group(2)).lower()
-        for f in filenames
-        if (m := pattern.match(f))
-    })
-    return ids
